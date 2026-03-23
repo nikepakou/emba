@@ -14,10 +14,52 @@
 # Author(s): Michael Messner
 # Credits:   Binarly for support
 
-# Description: Extracts UEFI images with BIOSUtilities - https://github.com/platomav/BIOSUtilities/tree/refactor
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: 提取UEFI固件镜像中的内容
+# 依赖工具: UEFITool, uefi-firmware-parser, BIOSUtilities (ami_pfat_extract.py), binwalk, unblob
+#             - UEFITool/UEFIExtract: 用于提取UEFI固件中的文件和组件
+#             - uefi-firmware-parser: Binarly开发的UEFI固件解析工具
+#             - BIOSUtilities: platomav开发的BIOS/UEFI工具集，包含ami_pfat_extract.py用于提取AMI UEFI capsule
+#             - binwalk: 固件分析工具，用于嵌套提取
+#             - unblob: 通用固件提取工具
+#
+# 环境变量:
+#   - UEFI_DETECTED: 标记是否检测到UEFI固件 (1=是, 0=否)
+#   - RTOS: 标记是否为实时操作系统固件 (1=是, 0=否)
+#   - UEFI_VERIFIED: 标记UEFI固件是否验证成功 (1=成功, 0=未验证)
+#   - UEFI_AMI_CAPSULE: 标记是否检测到AMI capsule固件
+#   - FILES_UEFI: 提取的UEFI文件数量
+#   - FIRMWARE_PATH: 原始固件文件路径
+#   - LOG_DIR: 日志输出目录
+#   - P99_CSV_LOG: P99模块的CSV日志文件路径
+#
+# 工作流程:
+#   1. 检测是否为UEFI固件 + RTOS固件
+#   2. 调用uefi_firmware_parser进行初步分析
+#   3. 使用UEFITool提取UEFI固件
+#   4. 如检测到AMI capsule，使用ami_extractor提取
+#   5. 如UEFI_VERIFIED未置位，使用unblob进行二次提取
+#   6. 如仍未验证，使用binwalk进行第三次提取
+#   7. 对所有提取的文件进行架构分析
+
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
 export PRE_THREAD_ENA=0
 
+# P35_UEFI_extractor - UEFI固件提取主函数
+# 功能: 协调多种UEFI固件提取工具，对UEFI/RTOS固件进行全面提取
+# 参数: 无 (使用全局环境变量)
+# 返回: lNEG_LOG - 提取结果标志 (0=未提取到有效内容, 1=成功提取)
+#
+# 提取策略 (优先级从高到低):
+#   1. UEFITool提取 - 首选UEFI标准工具
+#   2. AMI Extractor - 检测到AMI capsule时使用
+#   3. Unblob提取 - 作为备选方案
+#   4. Binwalk提取 - 最后备选方案
+#
+# 关键逻辑:
+#   - 只有当UEFI_DETECTED=1且RTOS=1时才运行此模块
+#   - 每种提取方式后都会检查UEFI_VERIFIED标志
+#   - 一旦UEFI_VERIFIED=1或RTOS=0(检测到Linux文件系统),停止进一步提取
+#   - 对提取的每个文件调用binary_architecture_threader进行架构分析
 P35_UEFI_extractor() {
   local lNEG_LOG=0
 
@@ -143,6 +185,19 @@ P35_UEFI_extractor() {
   fi
 }
 
+# uefi_firmware_parser - UEFI固件解析函数
+# 功能: 使用Binarly的uefi-firmware-parser工具分析UEFI固件结构
+# 参数: 
+#   $1 - lFIRMWARE_PATH_: 要分析的固件文件路径
+# 返回: 输出解析结果到日志文件,设置UEFI_VERIFIED全局变量
+#
+# 依赖工具: uefi-firmware-parser (Binarly开发)
+#   - 官方网站: https://github.com/binarly-io/uefi-firmware-parser
+#   - 功能: 解析UEFI固件卷(Firmware Volume),提取PE/EFI镜像
+#
+# 输出:
+#   - 解析结果保存到 ${LOG_PATH_MODULE}/uefi-firmware-parser_${lFW_NAME_}.txt
+#   - 如果检测到多个Firmware Volume,设置UEFI_VERIFIED=1
 uefi_firmware_parser() {
   sub_module_title "UEFI firmware-parser analysis"
   local lFIRMWARE_PATH_="${1:-}"
@@ -170,6 +225,24 @@ uefi_firmware_parser() {
   fi
 }
 
+# ami_extractor - AMI UEFI Capsule提取器
+# 功能: 使用BIOSUtilities中的ami_pfat_extract.py提取AMI UEFI capsule固件
+# 参数:
+#   $1 - lFIRMWARE_PATH_: 原始固件文件路径
+#   $2 - lEXTRACTION_DIR_: 提取输出目录
+# 返回: 提取的固件保存到指定目录,更新CSV日志
+#
+# 依赖工具: ami_pfat_extract.py (BIOSUtilities)
+#   - 官方网站: https://github.com/platomav/BIOSUtilities
+#   - 用途: 提取AMI PFAT (Pre-Flash Authentication Technology) capsule固件
+#   - 支持的固件类型: AMI Aptio UEFI固件
+#
+# 提取流程:
+#   1. 运行ami_pfat_extract.py进行提取
+#   2. 检查提取结果是否有效(无Error输出)
+#   3. 对提取的文件进行架构分析
+#   4. 如果提取文件数>5,设置UEFI_VERIFIED=1跳过深度提取
+#   5. 写入CSV日志记录提取结果
 ami_extractor() {
   sub_module_title "AMI capsule UEFI extractor"
 
@@ -219,6 +292,27 @@ ami_extractor() {
   print_ln
 }
 
+# uefi_extractor - UEFITool提取器
+# 功能: 使用UEFITool提取UEFI固件中的所有组件
+# 参数:
+#   $1 - lFIRMWARE_PATH_: 原始固件文件路径
+#   $2 - lEXTRACTION_DIR_: 提取输出目录
+# 返回: 提取的固件组件保存到指定目录,输出详细报告
+#
+# 依赖工具: UEFIExtract (UEFITool子工具)
+#   - 官方网站: https://github.com/LongSoft/UEFITool
+#   - 用途: 提取和解包UEFI固件中的所有组件
+#   - 支持: PE32镜像、DXE驱动、NVAR变量等
+#
+# 提取内容:
+#   - NVAR entry: UEFI NVRAM变量条目
+#   - PE32 image: 32位PE可执行镜像
+#   - DXE driver: DXE驱动程序
+#
+# 输出报告:
+#   - firmware.report.txt: 包含所有提取组件的详细信息
+#   - 统计提取的NVAR/PE32/驱动数量
+#   - 尝试检测UEFI架构类型(x64/IA32/ARM等)
 uefi_extractor() {
   sub_module_title "UEFITool extractor"
 

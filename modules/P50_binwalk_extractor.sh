@@ -13,14 +13,58 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Extracts firmware with binwalk to the module log directory.
-#               This module is a fallback module for the very rare case that our extraction process was failing
-#               e.g. in cases like this https://github.com/onekey-sec/sasquatch/issues/19
+# Description: 使用binwalk提取固件(备选模块)
+# 依赖工具: binwalk, tree, iconv
+#             - binwalk: 固件分析工具,用于识别和提取固件中的嵌套文件
+#             - tree: 树状显示目录结构
+#             - iconv: 字符编码转换,用于处理不可打印字符
+#
+# 环境变量:
+#   - UEFI_VERIFIED: UEFI固件验证标志
+#   - RTOS: 实时操作系统标志 (1=未找到Linux, 0=已找到Linux)
+#   - DJI_DETECTED: DJI固件检测标志
+#   - WINDOWS_EXE: Windows可执行文件标志
+#   - FULL_EMULATION: 完整系统仿真标志
+#   - FIRMWARE_PATH_BAK: 原始固件路径备份
+#
+# 模块定位:
+#   - 这是一个备选(Fallback)模块
+#   - 主要用于unblob提取失败的特殊情况
+#   - 例如: https://github.com/onekey-sec/sasquatch/issues/19
+#
+# 使用限制:
+#   - Binwalk v3在处理符号链接时有问题
+#   - 当启用完整系统仿真(FULL_EMULATION=1)时,自动禁用binwalk
+#   - 仅处理文件,不处理目录(目录由deep extractor处理)
+#
+# 已知问题:
+#   - 路径中的不可打印字符可能导致问题
+#   - 符号链接可能在提取过程中丢失
+#   - 可执行文件权限可能丢失
 
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
-# This module extracts the firmware and is blocking modules that needs executed before the following modules can run
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
+# 此模块用于提取固件,会阻塞需要在其后执行的模块
 export PRE_THREAD_ENA=0
 
+# P50_binwalk_extractor - Binwalk固件提取主函数
+# 功能: 使用binwalk提取固件中的嵌套文件
+# 参数: 无 (使用全局环境变量)
+# 返回: 提取结果日志
+#
+# 提取条件 (跳过场景):
+#   - UEFI_VERIFIED=1: 已验证的UEFI固件
+#   - RTOS=0: 已找到Linux文件系统
+#   - DJI_DETECTED=1: 已检测DJI固件
+#   - WINDOWS_EXE=1: Windows可执行文件
+#   - FULL_EMULATION=1: 完整系统仿真模式(binwalk有已知bug)
+#
+# 提取流程:
+#   1. 检查是否需要跳过(已由其他提取器处理)
+#   2. 使用binwalker_matryoshka进行递归提取
+#   3. 清理不可打印字符的路径
+#   4. 对提取的文件进行架构分析
+#   5. 使用linux_basic_identification统计Linux路径
+#   6. 输出目录树结构到日志
 P50_binwalk_extractor() {
   module_log_init "${FUNCNAME[0]}"
 
@@ -107,6 +151,22 @@ P50_binwalk_extractor() {
   module_end_log "${FUNCNAME[0]}" "${#lFILES_BINWALK_ARR[@]}"
 }
 
+# linux_basic_identification - Linux基本路径识别函数
+# 功能: 统计提取结果中包含Linux典型路径的文件数量
+# 参数:
+#   $1 - lFIRMWARE_PATH_CHECK: 要检查的固件目录路径
+#   $2 - lIDENTIFIER: 模块标识符(可选)
+# 返回: Linux路径计数器(匹配的文件数量)
+#
+# 匹配的关键路径:
+#   - /bin/: 二进制文件目录
+#   - /busybox: BusyBox可执行文件
+#   - /shadow: 密码影子文件
+#   - /passwd: 用户账户文件
+#   - /sbin/: 系统二进制目录
+#   - /etc/: 系统配置文件目录
+#
+# 用途: 用于判断是否成功提取到Linux文件系统
 linux_basic_identification() {
   local lFIRMWARE_PATH_CHECK="${1:-}"
   local lIDENTIFIER="${2:-}"
@@ -125,6 +185,19 @@ linux_basic_identification() {
   echo "${lLINUX_PATH_COUNTER_BINWALK}"
 }
 
+# remove_uprintable_paths - 不可打印字符路径清理函数
+# 功能: 清理文件名中的不可打印字符,避免后续处理问题
+# 参数:
+#   $1 - lOUTPUT_DIR_BINWALK: 要清理的目录路径
+# 返回: 修改文件名,将不可打印字符替换为可打印字符
+#
+# 处理逻辑:
+#   1. 查找所有包含不可打印字符的文件名
+#   2. 使用iconv将UTF-8转换为ASCII ( translit模式)
+#   3. 重命名文件为清理后的名称
+#
+# 原因: binwalk提取的固件可能包含非标准字符,
+#       这些字符会导致后续处理(如系统仿真)出现问题
 remove_uprintable_paths() {
   local lOUTPUT_DIR_BINWALK="${1:-}"
 

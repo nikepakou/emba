@@ -13,12 +13,61 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Analyzes firmware with unblob, checks entropy and extracts firmware to the log directory.
+# Description: 深度固件提取器 - 递归提取固件中的嵌套文件
+# 依赖工具: unblob, binwalk, md5sum, tree, du
+#             - unblob: 通用固件提取工具(默认)
+#             - binwalk: 备选固件提取工具
+#             - md5sum: 计算文件MD5用于去重
+#             - tree: 树状显示目录结构
+#             - du: 磁盘空间检查
+#
+# 环境变量:
+#   - RTOS: 实时操作系统标志 (1=未找到Linux, 0=已找到Linux)
+#   - UEFI_VERIFIED: UEFI固件验证标志
+#   - DJI_DETECTED: DJI固件检测标志
+#   - DISABLE_DEEP: 禁用深度提取标志
+#   - DEEP_EXT_DEPTH: 深度提取轮数 (默认4轮)
+#   - MAX_EXT_SPACE: 最大允许磁盘空间
+#   - DISK_SPACE_CRIT: 磁盘空间危急标志
+#   - FIRMWARE_PATH_CP: 固件副本路径
+#   - P99_CSV_LOG: P99模块CSV日志
+#
+# 模块定位:
+#   - 深度提取模块,对P55/P50提取后的文件进行二次/多次提取
+#   - 递归处理: 每轮提取后检查是否发现新文件,继续提取
+#   - 多轮迭代: 默认4轮深度提取,每轮使用不同的提取策略
+#
+# 深度提取流程:
+#   1. 检查磁盘空间是否充足
+#   2. 迭代提取(最多4轮):
+#      - 第1-3轮: 使用EMBA特定提取器处理特定格式
+#      - 第4轮: 使用unblob进行最终提取
+#   3. 每轮提取后检测是否发现Linux文件系统
+#   4. 发现Linux文件系统后停止提取
 
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
-# This module extracts the firmware and is blocking modules that needs executed before the following modules can run
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
+# 此模块用于提取固件,会阻塞需要在其后执行的模块
 export PRE_THREAD_ENA=0
 
+# P60_deep_extractor - 深度固件提取主函数
+# 功能: 协调多轮深度提取流程
+# 参数: 无 (使用全局环境变量)
+# 返回: 提取结果日志
+#
+# 提取条件 (跳过场景):
+#   - RTOS=0: 已找到Linux文件系统
+#   - UEFI_VERIFIED=1: 已验证的UEFI固件
+#   - DJI_DETECTED=1: 已检测DJI固件
+#   - DISABLE_DEEP=1: 深度提取被禁用
+#
+# 提取流程:
+#   1. 检查磁盘空间
+#   2. 如果磁盘空间充足,执行deep_extractor
+#   3. 统计提取后的文件数量
+#   4. 对新增文件进行架构分析
+#   5. 统计Linux路径数量
+#   6. 输出目录树结构
+#   7. 如果发现root路径,记录到CSV
 P60_deep_extractor() {
   module_log_init "${FUNCNAME[0]}"
 
@@ -105,11 +154,41 @@ P60_deep_extractor() {
   module_end_log "${FUNCNAME[0]}" "${#lFILES_EXT_ARR[@]}"
 }
 
+# check_disk_space - 磁盘空间检查函数
+# 功能: 检查固件目录占用的磁盘空间
+# 参数: 无 (使用全局环境变量FIRMWARE_PATH_CP)
+# 返回: 设置全局变量DISK_SPACE (单位: MB)
+#
+# 检查逻辑:
+#   - 使用du命令计算固件目录大小
+#   - --max-depth=1: 只计算顶层目录
+#   - --exclude="proc": 排除/proc虚拟文件系统
+#   - 输出排序后取最大值
 check_disk_space() {
   export DISK_SPACE=0
   DISK_SPACE=$(du -hm "${FIRMWARE_PATH_CP}" --max-depth=1 --exclude="proc" 2>/dev/null | awk '{ print $1 }' | sort -hr | head -1 || true)
 }
 
+# deep_extractor - 深度提取执行函数
+# 功能: 执行多轮深度提取
+# 参数: 无
+# 返回: 迭代提取文件到固件目录
+#
+# 深度提取策略:
+#   - 默认4轮提取 (由DEEP_EXT_DEPTH控制)
+#   - 每轮提取后使用detect_root_dir_helper检测Linux文件系统
+#   - 发现Linux文件系统后立即停止
+#   - 磁盘空间不足时停止
+#
+# 提取轮次:
+#   - 1st round: 初始提取
+#   - 2nd round: 二次提取
+#   - 3rd round: 三次提取
+#   - 4th round: 最终unblob提取 (带有警告信息)
+#
+# 特殊情况:
+#   - 如果P99_CSV_LOG不存在,先初始化文件列表
+#   - 如果初始已找到Linux文件系统,设置NO_EXTRACTED=1
 deep_extractor() {
   sub_module_title "Deep extraction mode"
 
@@ -171,6 +250,21 @@ deep_extractor() {
   fi
 }
 
+# deeper_extractor_helper - 深度提取辅助函数
+# 功能: 遍历文件列表并调用提取器
+# 参数: 无 (使用全局变量FIRMWARE_PATH_CP)
+# 返回: 提取的文件保存到原目录
+#
+# 处理逻辑:
+#   1. 使用prepare_file_arr_limited准备待处理文件列表
+#   2. 遍历每个文件,计算MD5用于去重
+#   3. 跳过已处理过的文件(MD5_DONE_DEEP数组)
+#   4. 调用deeper_extractor_threader进行提取
+#   5. 等待所有子进程完成
+#
+# MD5去重机制:
+#   - 避免重复处理相同的文件
+#   - 提高提取效率
 deeper_extractor_helper() {
   local lFILE_TMP=""
   local lFILE_MD5=""
@@ -193,6 +287,29 @@ deeper_extractor_helper() {
   cat "${LOG_PATH_MODULE}/tmp_out_"* >> "${LOG_FILE}" 2>/dev/null || true
 }
 
+# deeper_extractor_threader - 深度提取线程函数
+# 功能: 针对单个文件选择合适的提取器进行提取
+# 参数:
+#   $1 - lFILE_TMP: 要处理的文件路径
+#   $2 - lFILE_MD5: 文件的MD5值(用于日志)
+# 返回: 提取的文件保存到原文件同目录
+#
+# 提取器选择策略 (优先级从高到低):
+#   1. fw_bin_detector: 预检测固件类型
+#   2. VMDK_DETECTED: VMDK虚拟机磁盘提取
+#   3. EXT_IMAGE: ext文件系统提取
+#   4. BSD_UFS: BSD UFS文件系统提取
+#   5. ANDROID_OTA: Android OTA更新包提取
+#   6. OPENSSL_ENC_DETECTED: OpenSSL加密文件提取
+#   7. BUFFALO_ENC_DETECTED: Buffalo加密固件提取
+#   8. ZYXEL_ZIP: ZyXel ZIP加密提取
+#   9. QCOW_DETECTED: QEMU QCOW2镜像提取
+#   10. BMC_ENC_DETECTED: BMC加密固件提取
+#   11. 默认: 使用binwalk或unblob提取
+#
+# 日志处理:
+#   - 每个文件的日志单独保存到 tmp_out_${MD5}.log
+#   - 避免多线程日志混乱
 deeper_extractor_threader() {
   local lFILE_TMP="${1:-}"
   local lFILE_MD5="${2:-}"

@@ -13,12 +13,55 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Identification and extraction of typical package archives like deb, apk, ipk
+# Description: 识别和提取常见软件包归档文件
+# 依赖工具: dpkg-deb, rpm2cpio, cpio, unzip, tar
+#             - dpkg-deb: Debian/Ubuntu软件包提取工具
+#             - rpm2cpio + cpio: RPM软件包提取工具
+#             - unzip: APK(Android)软件包提取工具
+#             - tar: IPK(OpenWrt)软件包提取工具
+#
+# 环境变量:
+#   - DISABLE_DEEP: 禁用深度提取标志
+#   - FILES_PRE_PACKAGE: 提取前的文件数
+#   - ROOT_PATH: 检测到的根路径数组
+#   - FIRMWARE_PATH_CP: 固件副本路径
+#   - THREADED: 多线程模式标志
+#
+# 支持的软件包格式:
+#   - .deb / .udeb: Debian/Ubuntu DEB包
+#   - .rpm: RedHat/CentOS RPM包
+#   - .apk: Android APK安装包
+#   - .ipk: OpenWrt IPK包
+#
+# 模块定位:
+#   - 在深度提取后运行
+#   - 提取固件中嵌入的软件包
+#   - 将软件包内容提取到相应的根目录
+#   - 使后续分析能访问包内的文件
 
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
-# This module extracts the firmware and is blocking modules that needs executed before the following modules can run
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
+# 此模块用于提取固件,会阻塞需要在其后执行的模块
 export PRE_THREAD_ENA=0
 
+# P65_package_extractor - 软件包提取主函数
+# 功能: 识别并提取固件中的各类软件包
+# 参数: 无 (使用全局环境变量)
+# 返回: 提取结果日志
+#
+# 提取流程:
+#   1. 检查是否禁用深度提取
+#   2. 统计提取前的文件数量
+#   3. 依次执行各类软件包提取:
+#      - deb_extractor: 提取DEB包
+#      - ipk_extractor: 提取IPK包
+#      - apk_extractor: 提取APK包
+#      - rpm_extractor: 提取RPM包
+#   4. 统计提取后的文件数量
+#   5. 如果有新文件,更新架构分析和路径统计
+#
+# 提取条件:
+#   - 磁盘空间不足时跳过对应包类型
+#   - 使用-xdev只处理当前文件系统,不跨越挂载点
 P65_package_extractor() {
   module_log_init "${FUNCNAME[0]}"
   module_title "Package extractor module"
@@ -95,6 +138,20 @@ P65_package_extractor() {
   module_end_log "${FUNCNAME[0]}" "${lNEG_LOG}"
 }
 
+# rpm_extractor - RPM软件包提取函数
+# 功能: 查找并提取固件中的RPM包
+# 参数: 无 (使用全局变量)
+# 返回: RPM包内容提取到根目录
+#
+# 依赖工具: rpm2cpio, cpio
+#   - rpm2cpio: 将RPM转换为cpio格式
+#   - cpio: 从cpio归档中提取文件
+#
+# 处理逻辑:
+#   1. 查找所有.rpm文件(去重)
+#   2. 对每个根路径下的每个RPM包进行提取
+#   3. 使用rpm2cpio | cpio管道提取到目标目录
+#   4. 统计提取后的文件数量
 rpm_extractor() {
   sub_module_title "RPM archive extraction mode"
 
@@ -125,6 +182,19 @@ rpm_extractor() {
   fi
 }
 
+# apk_extractor - Android APK软件包提取函数
+# 功能: 查找并提取固件中的APK包
+# 参数: 无 (使用全局变量)
+# 返回: APK包内容提取到根目录
+#
+# 依赖工具: unzip
+#   - APK本质是zip压缩包,使用unzip提取
+#
+# 处理逻辑:
+#   1. 查找所有.apk文件(去重)
+#   2. 对每个根路径下的每个APK包进行提取
+#   3. 使用unzip -o强制覆盖提取到目标目录
+#   4. 统计提取后的文件数量
 apk_extractor() {
   sub_module_title "Android APK archive extraction mode"
 
@@ -155,6 +225,22 @@ apk_extractor() {
   fi
 }
 
+# ipk_extractor - OpenWrt IPK软件包提取函数
+# 功能: 查找并提取固件中的IPK包
+# 参数: 无 (使用全局变量)
+# 返回: IPK包内容提取到根目录
+#
+# 依赖工具: tar
+#   - IPK包本质是tar.gz(有时是纯gzip)压缩包
+#   - 结构: control.tar.gz + data.tar.gz 打包在 tar.gz 中
+#
+# 处理逻辑:
+#   1. 查找所有.ipk文件(去重)
+#   2. 检测是否为gzip格式(有些IPK直接是gzip)
+#   3. 提取tar包中的data.tar.gz
+#   4. 从data.tar.gz中提取实际文件到目标目录
+#   5. 清理临时目录
+#   6. 统计提取后的文件数量
 ipk_extractor() {
   sub_module_title "IPK archive extraction mode"
   local lIPK_ARCHIVES_ARR=()
@@ -198,6 +284,21 @@ ipk_extractor() {
   fi
 }
 
+# deb_extractor - Debian DEB软件包提取函数
+# 功能: 查找并提取固件中的DEB包
+# 参数: 无 (使用全局变量)
+# 返回: DEB包内容提取到根目录
+#
+# 依赖工具: dpkg-deb
+#   - Debian软件包管理工具
+#   - 支持--extract参数直接提取内容
+#
+# 处理逻辑:
+#   1. 查找所有.deb和.udeb文件(去重)
+#   2. 对每个根路径下的每个DEB包进行提取
+#   3. 支持多线程模式(THREADED=1)
+#   4. 使用dpkg-deb --extract提取到目标目录
+#   5. 统计提取后的文件数量
 deb_extractor() {
   sub_module_title "Debian archive extraction mode"
 
@@ -233,6 +334,16 @@ deb_extractor() {
   fi
 }
 
+# extract_deb_extractor_helper - DEB包提取辅助函数
+# 功能: 单个DEB包的提取操作
+# 参数:
+#   $1 - lDEB: DEB包文件路径
+#   $2 - lR_PATH: 目标提取目录
+# 返回: 提取的文件保存到目标目录
+#
+# 工具: dpkg-deb --extract
+#   - 提取DEB包内容到指定目录
+#   - 不安装包,只提取文件
 extract_deb_extractor_helper() {
   local lDEB="${1:-}"
   local lR_PATH="${2:-}"

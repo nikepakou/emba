@@ -14,16 +14,62 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Some preparation tasks:
-#               * check_firmware
-#               * prepare_binary_arr
-#               * architecture_check
-#               * detect_root_dir_helper
-#               * set_etc_paths
-#               * prepare_file_arr
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: 分析准备工作模块 - 为后续分析做初始化准备
+# 依赖工具: 无 (纯逻辑处理)
+#
+# 环境变量:
+#   - THREADED: 多线程模式标志
+#   - WAIT_PIDS: 等待的进程PID数组
+#   - LINUX_PATH_COUNTER: Linux路径计数器
+#   - ROOT_PATH: 检测到的根路径数组
+#   - FIRMWARE: 固件标志 (1=成功提取固件)
+#   - FIRMWARE_PATH: 固件路径
+#   - P99_CSV_LOG: P99模块CSV日志
+#   - RTOS: 实时操作系统标志
+#   - UEFI_VERIFIED: UEFI验证标志
+#   - UEFI_DETECTED: UEFI检测标志
+#   - WINDOWS_EXE: Windows可执行文件标志
+#   - KERNEL: Linux内核标志
+#   - SBOM_MINIMAL: SBOM最小化模式
+#
+# 模块定位:
+#   - P阶段最后一个模块(Preparation phase)
+#   - 在所有其他P模块完成后执行
+#   - 负责分析前的最终准备工作
+#
+# 准备工作内容:
+#   1. 等待所有P模块完成
+#   2. 统计Linux路径数量
+#   3. 确认FIRMWARE_PATH设置
+#   4. check_firmware: 快速检查固件
+#   5. 初始化P99_CSV_LOG(如果不存在)
+#   6. prepare_all_file_arrays: 准备文件数组
+#   7. architecture_check: 检查架构
+#   8. architecture_dep_check: 检查架构依赖
+#   9. detect_root_dir_helper: 辅助检测根目录
+#   10. set_etc_paths: 设置etc路径
+#   11. 输出检测结果摘要
+
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
 export PRE_THREAD_ENA=0
 
+# P99_prepare_analyzer - 分析准备主函数
+# 功能: 执行分析前的所有准备工作
+# 参数: 无 (使用全局环境变量)
+# 返回: 完成准备工作,设置分析所需的环境变量
+#
+# 详细流程:
+#   1. 等待所有P模块线程完成
+#   2. 使用linux_basic_identification统计Linux路径
+#   3. 如果有Linux路径或多个根路径,设置FIRMWARE=1和FIRMWARE_PATH
+#   4. 调用check_firmware进行快速固件检查
+#   5. 如果P99_CSV_LOG不存在,初始化文件列表
+#   6. 调用prepare_all_file_arrays准备文件数组
+#   7. 如果未检测到内核,执行架构检查和依赖检查
+#   8. 如果未验证UEFI且无根路径,调用detect_root_dir_helper
+#   9. 调用set_etc_paths设置etc路径
+#   10. 根据检测结果输出摘要信息(UEFI/RTOS/Android/Windows等)
+#   11. 记录统计信息到日志
 P99_prepare_analyzer() {
 
   # this module is the latest in the preparation phase. So, wait for all the others

@@ -13,11 +13,59 @@
 #
 # Author(s): Michael Messner
 
-# Description: Extracts DJI drone firmware with https://github.com/o-gs/dji-firmware-tools
+# Description: 提取DJI大疆无人机固件
+# 依赖工具: dji-firmware-tools, unblob, python3
+#             - dji-firmware-tools: https://github.com/o-gs/dji-firmware-tools
+#               大疆固件解密和提取工具集
+#             - dji_imah_fwsig.py: 用于解密IM*H系列固件(PRAK/UFIE/PUEK等加密)
+#             - dji_xv4_fwcon.py: 用于提取xV4系列大疆固件
+#             - unblob: 通用固件提取工具
 #
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# 环境变量:
+#   - DJI_DETECTED: 标记是否成功检测/提取DJI固件
+#   - DJI_XV4_DETECTED: 标记是否检测到xV4系列固件
+#   - DJI_PRAK_DETECTED: 标记是否检测到PRAK系列固件
+#   - RTOS: 标记是否为实时操作系统固件 (1=是, 0=已找到Linux文件系统)
+#   - FIRMWARE_PATH_BAK: 原始固件路径备份
+#   - EXT_DIR: 外部工具目录
+#
+# DJI固件加密机制 (按版本和时间排序):
+#   - UFIE: 最早的全固件加密 (2018-2021)
+#   - PRAK: 后续的分区加密 (2017-2020)
+#   - PUEK: 用户可更新密钥加密 (2017)
+#   - IAEK: 航空版加密 (2017)
+#   - TBIE: 无人机特定加密 (2018-2021)
+#   - RREK: 遥控器加密 (2017)
+#
+# 提取策略:
+#   1. xV4系列: 使用dji_xv4_fwcon.py直接提取
+#   2. IM*H系列: 
+#      a. 首先用unblob初步提取tar包
+#      b. 识别固件文件头的加密密钥标识符(4字节)
+#      c. 尝试多个已知密钥进行解密
+#      d. 对解密后的文件再次使用unblob提取
+#   3. 一旦提取到Linux文件系统,停止进一步提取
+#
+# 参考资料: https://arxiv.org/ftp/arxiv/papers/2312/2312.16818.pdf
+
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
 export PRE_THREAD_ENA=0
 
+# P40_DJI_extractor - DJI无人机固件提取主函数
+# 功能: 协调DJI固件提取流程,支持xV4和IM*H两大系列
+# 参数: 无 (使用全局环境变量)
+# 返回: lNEG_LOG - 提取结果标志
+#
+# 支持的固件类型:
+#   - DJI_XV4_DETECTED: xV4系列无人机固件 (如Mavic, Phantom等)
+#   - DJI_PRAK_DETECTED: IM*H系列加密固件 (使用PRAK/UFIE等密钥)
+#
+# 提取流程:
+#   1. 检查dji-firmware-tools是否安装
+#   2. 检查是否检测到DJI固件标识
+#   3. 如果是xV4固件,调用dji_xv4_firmware_extractor
+#   4. 如果是IM*H固件,调用dji_imah_firmware_extractor
+#   5. 检查是否成功提取文件并更新日志
 P40_DJI_extractor() {
   local lNEG_LOG=0
   export DJI_DETECTED=0
@@ -77,6 +125,36 @@ P40_DJI_extractor() {
   module_end_log "${FUNCNAME[0]}" "${lNEG_LOG}"
 }
 
+# dji_imah_firmware_extractor - DJI IM*H系列固件解密提取函数
+# 功能: 提取和解密DJI IM*H系列无人机固件(使用PRAK/UFIE等加密)
+# 参数:
+#   $1 - lFIRMWARE_PATH: 固件文件/目录路径
+#   $2 - lEXTRACTION_DIR: 提取输出目录
+# 返回: 解密并提取固件内容到指定目录
+#
+# 密钥识别机制:
+#   - 固件文件偏移44-47字节(4字节)包含密钥标识符
+#   - 根据标识符选择对应的密钥列表进行尝试
+#   - 支持的标识符: UFIE, PRAK, PUEK, IAEK, TBIE, RREK
+#
+# 密钥版本数组:
+#   - lUFIE_KEYS_ARR: UFIE加密密钥 (2018-2021年版本)
+#   - lPRAK_KEYS_ARR: PRAK加密密钥 (2017-2020年版本)
+#   - lPUEK_KEYS_ARR: PUEK加密密钥 (2017年版本)
+#   - lIAEK_KEYS_ARR: IAEK加密密钥 (2017年版本)
+#   - lRREK_KEYS_ARR: RREK加密密钥 (2017年版本)
+#   - lTBIE_KEYS_ARR: TBIE加密密钥 (2018-2021年版本)
+#
+# 提取流程:
+#   1. 初始提取: 使用unblob从tar包中提取内容
+#   2. 密钥识别: 从固件头提取加密标识符
+#   3. 密钥尝试: 遍历对应密钥列表尝试解密
+#   4. 二次提取: 对解密后的文件再次使用unblob
+#   5. 架构分析: 对所有提取的二进制文件进行架构分析
+#
+# 优化策略:
+#   - 一旦提取文件数>100,停止进一步提取
+#   - 一旦检测到Linux文件系统,停止提取
 dji_imah_firmware_extractor() {
   local lFIRMWARE_PATH="${1:-}"
   local lEXTRACTION_DIR="${2:-}"
@@ -278,6 +356,24 @@ dji_imah_firmware_extractor() {
   done
 }
 
+# dji_xv4_firmware_extractor - DJI xV4系列固件提取函数
+# 功能: 提取DJI xV4系列无人机固件
+# 参数:
+#   $1 - lFIRMWARE_PATH_: 固件文件路径
+#   $2 - lEXTRACTION_DIR_: 提取输出目录
+# 返回: 提取固件到指定目录
+#
+# 依赖工具: dji_xv4_fwcon.py (dji-firmware-tools)
+#   - 用途: 解包xV4系列大疆固件格式
+#   - 支持设备: Mavic系列, Phantom 4等
+#
+# 提取流程:
+#   1. 使用dji_xv4_fwcon.py -x参数提取固件
+#   2. 查找提取的.bin文件
+#   3. 对每个.bin文件使用unblob进行二次提取
+#   4. 对所有提取的文件进行架构分析
+#
+# 注意: 目前unblob也能直接提取此类固件,但保留此工具作为备选
 dji_xv4_firmware_extractor() {
   sub_module_title "xV4 DJI drone firmware extractor"
   # in my current tests this module is not needed as unblob is able to extract the firmware

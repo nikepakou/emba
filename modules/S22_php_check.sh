@@ -15,15 +15,28 @@
 # Author(s): Michael Messner, Pascal Eckmann
 # Contributor(s): Stefan Haboeck
 
-# Description:  Checks for vulnerabilities in php scripts.
-#               Checks for configuration issues in php.ini files
+# Description:  PHP脚本漏洞检查模块
+#               检测PHP脚本中的安全漏洞
+#               检查php.ini配置文件问题
+#
+# 贡献者: Stefan Haboeck
+#
+# 依赖工具: semgrep, php (PHP解释器)
+#
+# 环境变量:
+#   - PHP_CHECK: 是否启用PHP检查
+#   - P99_CSV_LOG: P99模块生成的CSV日志
 
 S22_php_check()
 {
+  # S22 PHP脚本漏洞检查主函数
+  # 检测PHP脚本中的安全漏洞和php.ini配置问题
+
   module_log_init "${FUNCNAME[0]}"
   module_title "PHP vulnerability checks"
   pre_module_reporter "${FUNCNAME[0]}"
 
+  # 初始化漏洞计数器和配置计数器
   local lPHP_SCRIPTS_ARR=()
   export S22_PHP_VULNS=0
   export S22_PHP_INI_ISSUES=0

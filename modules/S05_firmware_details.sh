@@ -14,8 +14,19 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Counts the number of files and executables in firmware and prints firmware tree in the log files.
-#               It also searches through possible release files config/release_files.cfg for strings.
+# Description:  固件详情统计模块
+#               统计固件中的文件数量和目录数量
+#               生成文件系统树形结构
+#               搜索版本发布文件(release files)
+#
+# 主要功能:
+#   1. 统计文件数量 (从P99_CSV_LOG读取)
+#   2. 统计目录数量 (从firmware目录)
+#   3. 生成文件系统树 (使用tree或ls -laR)
+#   4. 搜索版本信息文件 (从release_files.cfg配置)
+#
+# 依赖配置:
+#   - config/release_files.cfg: 版本文件搜索规则
 
 S05_firmware_details()
 {

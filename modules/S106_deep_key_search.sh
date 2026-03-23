@@ -14,7 +14,12 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Searches for files with a specified string pattern inside.
+# Description:  深度密钥材料搜索模块
+#               在文件中搜索指定的字符串模式
+#               查找敏感的密钥材料
+#
+# 依赖: config/deep_key_search.cfg
+# 线程优先级: THREAD_PRIO=0
 export THREAD_PRIO=0
 
 S106_deep_key_search()

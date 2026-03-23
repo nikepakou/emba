@@ -13,8 +13,11 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Cracks password hashes from S109 (STACS module) with jtr
-#               jtr runtime is 60 minutes
+# Description:  John the Ripper本地密码破解模块
+#               使用John the Ripper工具破解从S108/S107模块获取的密码哈希
+#               运行时间限制: 60分钟
+#
+# 依赖: John the Ripper (jtr)
 
 
 S109_jtr_local_pw_cracking() {

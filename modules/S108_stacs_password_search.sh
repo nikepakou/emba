@@ -13,9 +13,10 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Searches for password patterns within the firmware.
-#               This module uses the stacs engine - https://github.com/stacscan/stacs
-#               including the community ruleset - https://github.com/stacscan/stacs-rules
+# Description:  STACS密码搜索模块
+#               使用STACS引擎搜索固件中的密码模式
+#               STACS: https://github.com/stacscan/stacs
+#               规则集: https://github.com/stacscan/stacs-rules
 
 S108_stacs_password_search()
 {

@@ -14,9 +14,11 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Searches for files with a specified password pattern inside.
-# 描述：在固件中搜索包含指定密码模式的文件
-# 该模块用于深度分析固件文件，查找可能包含密码哈希值的文件
+# Description:  深度密码搜索模块
+#               在固件文件中搜索指定的密码模式
+#               查找可能包含密码哈希值的文件
+#
+# 依赖: config/deep_password_search.cfg
 
 # 模块函数：S107_deep_password_search
 # 功能：深度分析文件以查找密码哈希值

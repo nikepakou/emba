@@ -13,6 +13,19 @@
 #
 # Author(s): Michael Messner
 
+# Description:  Windows可执行文件基本分析模块
+#               使用exiftool和readpe工具提取PE文件的详细信息
+#               包括文件元数据、PE头信息、链接器版本等
+#
+# 依赖工具:
+#   - exiftool: 提取文件元数据信息
+#   - readpe: 读取PE文件头信息
+#   - pescan: PE文件快速扫描
+#
+# 输出示例:
+#   - exifdata_*.log: exiftool提取的元数据
+#   - readpe_*.log: PE结构详细信息
+
 # The documentation can be generated with the following command:
 # perl -ne "s/^\t+//; print if m/END_OF_DOCS'?\$/ .. m/^\s*'?END_OF_DOCS'?\$/ and not m/END_OF_DOCS'?$/;" modules/template_module.sh
 # or with pod2text modules/template_module.sh

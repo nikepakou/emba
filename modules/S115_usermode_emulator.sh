@@ -14,9 +14,23 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Emulates executables from the firmware with qemu to get version information.
-#               Currently this is an experimental module and needs to be activated separately via the -E switch.
-#               It is also recommended to only use this technique in a dockerized or virtualized environment.
+# Description:  QEMU用户态模拟模块
+#               使用QEMU用户态模拟器运行固件中的可执行文件
+#               获取版本信息和动态分析数据
+#
+# 特点:
+#   - 实验性模块，需要通过-E开关单独激活
+#   - 建议在Docker或虚拟化环境中运行
+#   - 可能对主机环境造成影响
+#
+# 工作流程:
+#   1. 设置chroot环境
+#   2. 识别可模拟的二进制文件
+#   3. 使用QEMU进行用户态模拟
+#   4. 提取版本信息和字符串
+#   5. 生成模拟分析报告
+#
+# 依赖: QEMU, chroot/jchroot
 
 # Threading priority - if set to 1, these modules will be executed first
 export THREAD_PRIO=0

@@ -14,15 +14,27 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Checks for bugs, stylistic errors, etc. in python scripts, then it lists the found error types.
-#               For bandit configuration the ./config/bandit.yaml file can be adjusted
+# Description:  Python脚本安全检查模块
+#               使用bandit工具检测Python脚本中的
+#               安全漏洞、语法错误、风格问题等
+#
+# 配置: config/bandit.yaml (bandit配置文件)
+#
+# 依赖工具: bandit (Python安全分析工具)
+#
+# 环境变量:
+#   - PYTHON_CHECK: 是否启用Python检查
 
 S21_python_check()
 {
+  # S21 Python脚本安全检查主函数
+  # 使用bandit工具检测Python脚本中的安全漏洞
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Check python scripts for security issues"
   pre_module_reporter "${FUNCNAME[0]}"
 
+  # 初始化漏洞计数器和脚本计数器
   local lS21_PY_VULNS=0
   local lS21_PY_SCRIPTS=0
   local lPY_SCRIPT=""

@@ -14,7 +14,11 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Looks for web-based files in folders like www and searches for code executions inside of them.
+# Description:  命令注入漏洞检测模块
+#               搜索www等Web目录中的文件
+#               检测潜在的命令执行漏洞
+#
+# 依赖: config/check_command_inj_dirs.cfg
 
 S100_command_inj_check()
 {

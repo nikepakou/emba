@@ -14,13 +14,34 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  This module looks for protection mechanisms in the binaries via checksec.
+# Description:  二进制保护机制检测模块
+#               使用checksec工具检测二进制文件的安全保护机制
+#
+# 检测的保护机制:
+#   - RELRO: 重定位只读保护
+#   - STACK CANARY: 栈保护
+#   - NX: 不可执行栈
+#   - PIE: 位置无关可执行文件
+#   - RPATH/RUNPATH: 运行路径
+#   - Symbols: 符号表
+#   - FORTIFY: 强化编译
+#
+# 线程优先级: THREAD_PRIO=1 (高优先级)
+#
+# 依赖工具: checksec (二进制安全检查工具)
+#
+# 环境变量:
+#   - EXT_DIR: 外部工具目录
+#   - P99_CSV_LOG: P99模块生成的CSV日志
 
 # Threading priority - if set to 1, these modules will be executed first
 export THREAD_PRIO=1
 
 S12_binary_protection()
 {
+  # S12二进制保护机制检测主函数
+  # 使用checksec工具检测ELF二进制文件的安全保护机制
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Check binary protection mechanisms"
   pre_module_reporter "${FUNCNAME[0]}"
@@ -28,15 +49,18 @@ S12_binary_protection()
   local lNEG_LOG=0
   local lWAIT_PIDS_S12=()
 
+  # 检查checksec工具是否可用
   if [[ -f "${EXT_DIR}"/checksec ]] ; then
     local lCSV_LOG=""
     lCSV_LOG="${LOG_FILE_NAME/\.txt/\.csv}"
     lCSV_LOG="${CSV_DIR}""/""${lCSV_LOG}"
 
+    # 初始化CSV日志表头
     echo "RELRO;STACK CANARY;NX;PIE;RPATH;RUNPATH;Symbols;FORTIFY;Fortified;Fortifiable;FILE" >> "${lCSV_LOG}"
     printf "\t%-13.13s  %-16.16s  %-11.11s  %-11.11s  %-11.11s  %-11.11s  %-11.11s  %-5.5s  %s\n" \
       "RELRO" "CANARY" "NX" "PIE" "RPATH" "RUNPATH" "SYMBOLS" "FORTIFY" "FILE" | tee -a "${TMP_DIR}"/s12.tmp
 
+    # 遍历所有ELF文件，并行检测保护机制
     while read -r lBINARY; do
       binary_protection_threader "${lBINARY}" &
       local lTMP_PID="$!"
@@ -59,6 +83,11 @@ S12_binary_protection()
 }
 
 binary_protection_threader() {
+  # binary_protection_threader: 二进制保护检测线程函数
+  # 使用checksec工具检测单个二进制文件的保护机制
+  #
+  # 参数:
+  #   $1 - lBINARY: 要检测的二进制文件路径
   local lBINARY="${1:-}"
 
   local lCSV_LOG=""
@@ -77,12 +106,18 @@ binary_protection_threader() {
   # lJSON_ARRAY_OUT only needed for JSON logging
   local lJSON_ARRAY_OUT=()
 
+  # 使用checksec工具以CSV格式检测二进制文件的保护机制
   lCSV_BIN_OUT=$("${EXT_DIR}"/checksec --format=csv --file="${lBINARY}")
 
+  # 将CSV逗号分隔符转换为分号 (EMBA使用分号作为CSV分隔符)
   # we usually use ; instead of , for csv ...
   lCSV_BIN_OUT=${lCSV_BIN_OUT//,/\;}
   echo "${lCSV_BIN_OUT}" >> "${lCSV_LOG}"
 
+  # 为输出添加颜色编码:
+  # 红色(RED): 无保护或弱保护
+  # 橙色(ORANGE): 部分保护
+  # 绿色(GREEN): 完全保护
   # coloring the output from csv
   lCSV_BIN_OUT=$(echo "${lCSV_BIN_OUT}" | sed -r "s/(No\ RELRO)/${RED_}&${NC_}/g")
   lCSV_BIN_OUT=$(echo "${lCSV_BIN_OUT}" | sed -r "s/(Partial\ RELRO)/${ORANGE_}&${NC_}/g")

@@ -15,9 +15,22 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  This module identifies binaries that are using weak functions and creates a ranking of areas to look first.
-#               It iterates through all executables and searches with radare for interesting functions like strcpy (defined in helpers.cfg).
-#               As the module runs quite long with high CPU load it only gets executed when the objdump module fails.
+# Description:  Radare弱函数检测模块
+#               使用radare2框架进行弱函数检测
+#               当objdump模块(S13)失败时作为备选方案执行
+#
+# 特点:
+#   - 运行时间长，CPU负载高
+#   - 仅在S13模块失败时执行
+#   - 使用radare2进行函数调用分析
+#   - 搜索危险函数 (strcpy等, 定义在helpers.cfg)
+#
+# 依赖: radare2框架
+#
+# 依赖工具: radare2 (二进制分析框架), r2 (radare2命令)
+#
+# 环境变量:
+#   - ARCH: 目标架构 (如ARM, MIPS, x86等)
 
 # Threading priority - if set to 1, these modules will be executed first
 # do not prio s13 and s14 as the dependency check during runtime will fail!
@@ -25,6 +38,11 @@ export THREAD_PRIO=0
 
 S14_weak_func_radare_check()
 {
+  # S14 Radare弱函数检测主函数
+  # 使用radare2框架进行弱函数检测
+  # 当S13模块(objdump方式)失败时作为备选方案执行
+  # 注意: 此模块运行时间长，CPU负载高
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Check binaries for weak functions (radare mode)"
   pre_module_reporter "${FUNCNAME[0]}"

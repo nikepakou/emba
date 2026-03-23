@@ -15,16 +15,28 @@
 # Author(s): Michael Messner, Pascal Eckmann
 # Contributor(s): Chao Yang - firmianay
 
-# Description:  Runs a Docker container with cwe-checker on Ghidra to check binary for
-#               common bug classes such as vicious functions or integer overflows.
-#               As the runtime is quite long, it needs to be activated separately via -c switch.
-#               Currently this module only work in a non docker environment!
+# Description:  CWE通用缺陷检测模块
+#               使用cwe-checker (基于Ghidra) 检测二进制中的常见漏洞模式
+#               检测类型: 危险函数、整数溢出等
+#
+# 特点:
+#   - 运行时间长，需要通过-c开关单独激活
+#   - 仅在非Docker环境中工作
+#   - 需要BINARY_EXTENDED=1
+#
+# 依赖: cwe-checker Docker容器
+#
+# 依赖工具: cwe-checker (Docker容器), Ghidra
+#
+# 环境变量:
+#   - BINARY_EXTENDED: 是否启用扩展二进制分析
 
 # Threading priority - if set to 1, these modules will be executed first
 export THREAD_PRIO=0
 
 S17_cwe_checker()
 {
+  # 检查是否启用了扩展二进制分析
   if [[ ${BINARY_EXTENDED} -eq 1 ]] ; then
     module_log_init "${FUNCNAME[0]}"
     module_title "Check binaries for vulnerabilities with cwe-checker"

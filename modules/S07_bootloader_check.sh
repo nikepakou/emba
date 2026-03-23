@@ -14,9 +14,18 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Scans for device tree blobs, bootloader and startup files and checks for the default runlevel.
-
-# This module is based on source code from lynis: https://raw.githubusercontent.com/CISOfy/lynis/master/include/tests_boot_services
+# Description:  引导程序和启动文件检查模块
+#               扫描设备树Blob、引导程序、启动文件
+#               检查默认运行级别(runlevel)
+#               基于Lynis项目的boot_services检测逻辑
+#
+# 主要功能:
+#   1. check_dtb: 扫描设备树Blob (.dtb文件)
+#   2. check_bootloader: 检查引导程序 (U-Boot, GRUB等)
+#   3. find_boot_files: 查找启动配置文件
+#   4. find_runlevel: 检测默认运行级别
+#
+# 依赖: 基于Lynis开源项目 https://github.com/CISOfy/lynis
 S07_bootloader_check()
 {
   module_log_init "${FUNCNAME[0]}"

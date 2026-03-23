@@ -13,17 +13,36 @@
 #
 # Author(s): Michael Messner
 
-# Description:  This module is using Ghidra to generate decompiled code from the firmware binaries.
-#               This module uses the ghidra script Haruspex.java (https://github.com/0xdea/ghidra-scripts)
-#               The generated source code is further analysed with semgrep and the rules provided by 0xdea
-#               (https://github.com/0xdea/semgrep-rules)
+# Description:  Ghidra反编译漏洞分析模块
+#               使用Ghidra对固件二进制进行反编译
+#               使用Haruspex.java脚本 (https://github.com/0xdea/ghidra-scripts)
+#               对生成的代码进行semgrep静态分析
+#               使用0xdea的规则集 (https://github.com/0xdea/semgrep-rules)
+#
+# 依赖:
+#   - Ghidra反编译器
+#   - Haruspex.java脚本
+#   - semgrep静态分析工具
+#   - 0xdea semgrep规则集
+#
+# 依赖工具: Ghidra, analyzeHeadless, semgrep
+#
+# 环境变量:
+#   - BINARY_EXTENDED: 是否启用扩展二进制分析
+#   - EXT_DIR: 外部工具目录
 
 S16_ghidra_decompile_checks()
 {
+  # S16 Ghidra反编译漏洞分析主函数
+  # 使用Ghidra对固件二进制进行反编译
+  # 使用Haruspex.java脚本进行代码分析
+  # 使用semgrep进行静态漏洞分析
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Check decompiled binary source code for vulnerabilities"
   pre_module_reporter "${FUNCNAME[0]}"
 
+  # 检查是否启用了扩展二进制分析
   if [[ ${BINARY_EXTENDED} -ne 1 ]] ; then
     print_output "[-] ${FUNCNAME[0]} - BINARY_EXTENDED not set to 1. You can set it up via a scan-profile."
     module_end_log "${FUNCNAME[0]}" 0

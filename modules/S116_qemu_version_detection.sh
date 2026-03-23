@@ -13,7 +13,14 @@
 #
 # Author(s): Michael Messner
 
-# Description:  This module extracts version information from the results of S115
+# Description:  QEMU模拟版本检测模块
+#               从S115模块的模拟结果中提取版本信息
+#               对模拟结果进行置信度评估
+#
+# 功能:
+#   - 解析QEMU模拟输出
+#   - 提取版本字符串
+#   - 生成版本检测报告
 
 S116_qemu_version_detection() {
   module_log_init "${FUNCNAME[0]}"

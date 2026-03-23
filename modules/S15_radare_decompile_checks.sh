@@ -13,9 +13,22 @@
 #
 # Author(s): Michael Messner
 
-# Description:  This module identifies binaries that are using weak functions and creates a ranking of areas to look first.
-#               It iterates through all executables and searches with radare for interesting functions like strcpy (defined in helpers.cfg).
-#               The analysis is done via the r2dec plugin from radara2 (see https://github.com/wargio/r2dec-js)
+# Description:  Radare反编译分析模块
+#               使用r2dec插件进行代码反编译分析
+#               识别二进制文件中的弱函数使用
+#               参考: https://github.com/wargio/r2dec-js
+#
+# 工作流程:
+#   1. 使用radare2进行反编译
+#   2. 分析反编译代码中的危险函数
+#   3. 生成安全分析报告
+#
+# 依赖: radare2 + r2dec插件
+#
+# 依赖工具: radare2, r2dec (反编译插件), r2 (radare2命令)
+#
+# 环境变量:
+#   - ARCH: 目标架构
 
 # Threading priority - if set to 1, these modules will be executed first
 # do not prio s13 and s14 as the dependency check during runtime will fail!
@@ -23,6 +36,11 @@ export THREAD_PRIO=0
 
 S15_radare_decompile_checks()
 {
+  # S15 Radare反编译分析主函数
+  # 使用r2dec插件对二进制文件进行反编译
+  # 分析反编译代码中的危险函数使用
+  # 参考: https://github.com/wargio/r2dec-js
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Create and analyze decompilation of binaries"
   pre_module_reporter "${FUNCNAME[0]}"

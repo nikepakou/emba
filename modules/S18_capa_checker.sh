@@ -13,10 +13,23 @@
 #
 # Author(s): Michael Messner
 
-# Description:  This module uses capa (https://github.com/mandiant/capa) for detecting binary behavior
-#               Currently capa only supports x86 architecture
+# Description:  二进制行为分析模块
+#               使用Mandiant的capa工具 (https://github.com/mandiant/capa)
+#               检测二进制文件的行为特征和能力
+#
+# 限制: 当前仅支持x86架构
+#
+# 依赖工具: capa (Mandiant恶意软件行为分析工具)
+#
+# 环境变量:
+#   - BINARY_EXTENDED: 是否启用扩展二进制分析
+#   - EXT_DIR: 外部工具目录
 
 S18_capa_checker() {
+  # S18 CAPA二进制行为分析主函数
+  # 使用Mandiant的capa工具检测二进制文件的行为特征和能力
+  # 支持功能: 反调试、反虚拟机、文件操作、网络通信等
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Analyse binary behavior with capa"
   pre_module_reporter "${FUNCNAME[0]}"

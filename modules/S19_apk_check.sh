@@ -13,11 +13,26 @@
 #
 # Author(s): Michael Messner
 #
-# Description:  This module identifies Android apk packages and performs a static
-#               vulnerability test with APKHunt: https://github.com/Cyber-Buddy/APKHunt
-
+# Description:  Android APK应用分析模块
+#               识别Android APK包并进行静态漏洞分析
+#               使用APKHunt工具 (https://github.com/Cyber-Buddy/APKHunt)
+#
+# 功能:
+#   1. apk_identifier: 识别APK文件
+#   2. apk_checker: 使用APKHunt进行漏洞扫描
+#
+# 依赖: APKHunt工具
+#
+# 依赖工具: APKHunt, apktool, aapt (Android SDK工具)
+#
+# 环境变量:
+#   - lAPK_ARR: 识别出的APK文件数组
 
 S19_apk_check() {
+  # S19 APK应用分析主函数
+  # 识别Android APK包并进行静态漏洞分析
+  # 使用APKHunt工具进行安全扫描
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Android apk checks"
   pre_module_reporter "${FUNCNAME[0]}"
@@ -28,6 +43,9 @@ S19_apk_check() {
 }
 
 apk_identifier() {
+  # apk_identifier: APK文件识别函数
+  # 扫描固件中的APK文件
+
   sub_module_title "Android apk identifier"
   export lAPK_ARR=()
   local lAPK_FILE=""

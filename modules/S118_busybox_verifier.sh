@@ -13,9 +13,15 @@
 #
 # Author(s): Michael Messner
 
-# Description:  After modules s115/s116 was able to identify BusyBox with the version identifier
-#               and the included applets this module checks the possible vulnerabilities
-#               with the BusyBox against the CVE database
+# Description:  BusyBox漏洞验证模块
+#               在S115/S116识别BusyBox及其版本后
+#               检测BusyBox及其包含的小程序可能存在的漏洞
+#               对比CVE数据库进行漏洞匹配
+#
+# 依赖:
+#   - S116_qemu_version_detection模块
+#   - S09_firmware_base_version_check模块
+#   - CVE数据库
 
 S118_busybox_verifier()
 {

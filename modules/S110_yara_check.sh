@@ -14,7 +14,11 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Checks files with yara for suspicious patterns.
+# Description:  YARA规则匹配模块
+#               使用YARA规则检测文件中的可疑模式
+#
+# 依赖: yara规则库
+# 线程优先级: THREAD_PRIO=0
 export THREAD_PRIO=0
 
 

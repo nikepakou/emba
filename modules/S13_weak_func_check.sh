@@ -14,9 +14,26 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  This module was the first module that existed in emba. The main idea was to identify the binaries that were using weak
-#               functions and to establish a ranking of areas to look at first.
-#               It iterates through all executables and searches with objdump for interesting functions like strcpy (defined in helpers.cfg).
+# Description:  弱函数深度检测模块
+#               使用objdump对所有可执行文件进行深度分析
+#               搜索危险函数如strcpy, sprintf等 (定义在helpers.cfg)
+#               基于CERN的安全建议
+#
+# 工作流程:
+#   1. 等待S12模块完成 (二进制保护检测)
+#   2. 获取目标架构和工具配置
+#   3. 遍历所有ELF文件
+#   4. 使用objdump反汇编查找危险函数调用
+#   5. 生成详细的安全漏洞报告
+#
+# 依赖: S12_binary_protection模块
+# 注意: 不设置为高优先级，因为运行时依赖检查会失败
+#
+# 依赖工具: objdump (GNU二进制工具链)
+#
+# 环境变量:
+#   - ARCH: 目标架构 (如ARM, MIPS, x86等)
+#   - P99_CSV_LOG: P99模块生成的CSV日志
 
 # Threading priority - if set to 1, these modules will be executed first
 # do not prio s13 and s14 as the dependency check during runtime will fail!
@@ -24,6 +41,11 @@ export THREAD_PRIO=0
 
 S13_weak_func_check()
 {
+  # S13弱函数深度检测主函数
+  # 使用objdump对二进制文件进行深度反汇编分析
+  # 查找危险函数调用 (如strcpy, sprintf等)
+  # 基于CERN的安全建议进行检测
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Check binaries for weak functions (intense)"
   pre_module_reporter "${FUNCNAME[0]}"
@@ -36,6 +58,7 @@ S13_weak_func_check()
   local lWAIT_PIDS_S13_ARR=()
   local lBIN_FILE=""
 
+  # 第1步: 检查目标架构是否已确定
   if [[ -n "${ARCH}" ]] ; then
     # This module waits for S12 - binary protections
     # check emba.log for S12_binary_protection starting

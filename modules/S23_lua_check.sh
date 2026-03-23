@@ -13,14 +13,24 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Checks for bugs, stylistic errors, etc. in lua scripts
+# Description:  Lua脚本安全检查模块
+#               检测Lua脚本中的漏洞、语法错误、风格问题等
+#
+# 依赖工具: lua (Lua解释器)
+#
+# 环境变量:
+#   - P99_CSV_LOG: P99模块生成的CSV日志
 
 S23_lua_check()
 {
+  # S23 Lua脚本安全检查主函数
+  # 检测Lua脚本中的漏洞和质量问题
+
   module_log_init "${FUNCNAME[0]}"
   module_title "Check lua scripts for security issues"
   pre_module_reporter "${FUNCNAME[0]}"
 
+  # 初始化漏洞计数器和问题计数器
   local lS23_LUA_VULNS=0
   local lS23_LUA_ISSUES=0
   local lLUA_SCRIPT=""

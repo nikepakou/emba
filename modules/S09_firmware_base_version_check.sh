@@ -14,32 +14,55 @@
 #
 # Author(s): Michael Messner, Pascal Eckmann
 
-# Description:  Iterates through a list with regex identifiers of version details
-#               (e.g. busybox:binary:"BusyBox\ v[0-9]\.[0-9][0-9]\.[0-9]\ .*\ multi-call\ binary" ) of all executables and
-#               checks if these fit on a binary in the firmware.
-#               The version configuration files are stored in config/bin_version_identifiers
+# Description:  固件静态二进制版本检测模块
+#               使用正则表达式匹配二进制文件中的版本信息
+#               例如: busybox:binary:"BusyBox\ v[0-9]\.[0-9][0-9]\.[0-9]\ .*\ multi-call\ binary"
+#
+# 工作流程:
+#   1. 从配置文件加载版本识别规则 (*.json)
+#   2. 遍历固件中的所有可执行文件
+#   3. 使用strings提取二进制字符串
+#   4. 正则匹配版本信息
+#   5. 生成CSV格式的版本检测报告
+#
+# 配置目录: config/bin_version_identifiers/
+# 线程优先级: THREAD_Prio=1 (高优先级模块)
+#
+# 依赖工具: strings, grep, sed, jq, md5sum, zgrep
+#
+# 环境变量:
+#   - P99_CSV_LOG: P99模块生成的CSV日志，包含所有已识别文件的列表
+#   - S09_CSV_LOG: 本模块输出的版本检测CSV日志
+#   - FILE_ARR: 待检测的可执行文件数组
+#   - CONFIDENCE_LEVEL: 置信度级别 (1=极低, 2=低, 3=中, 4=高)
+#   - RTOS: 是否为RTOS固件模式
+#   - THREADED: 是否启用多线程
 
 # Threading priority - if set to 1, these modules will be executed first
 export THREAD_PRIO=1
 
 S09_firmware_base_version_check() {
 
-  # this module check for version details statically.
-  # this module is designed for *x based systems
+  # S09固件基础版本检测主函数
+  # 静态分析固件二进制文件，使用正则表达式匹配版本信息
+  # 适用于xbased系统 (Linux, Unix等)
 
   module_log_init "${FUNCNAME[0]}"
   module_title "Static binary firmware versions detection"
   pre_module_reporter "${FUNCNAME[0]}"
 
+  # 第1步: 检查P99 CSV日志文件是否存在 (必须的前置依赖)
   if ! [[ -f "${P99_CSV_LOG}" ]]; then
     print_error "[-] Missing P99 CSV log file"
     module_end_log "${FUNCNAME[0]}" 0
     return
   fi
 
+  # 初始化CSV日志表头
   print_output "[*] Static version detection running ..." "no_log" | tr -d "\n"
   write_csv_log "EMBA source module" "binary/file" "rule identifier" "version_rule" "version_detected" "csv_rule" "license" "static/emulation"
 
+  # 设置类型为静态分析
   export TYPE="static"
   local lVERSION_IDENTIFIER=""
   export WAIT_PIDS_S09=()
@@ -51,20 +74,24 @@ S09_firmware_base_version_check() {
   mapfile -t lVERSION_IDENTIFIER_CFG_ARR < <(find "${lVERSION_IDENTIFIER_CFG_PATH}" -name "*.json" | sort)
 
   local lFILE_ARR_TMP=()
-  # P99 csv log is already unique but it has a lot of non binary files in it -> we pre-filter it now
+  # 从P99 CSV日志中提取文件列表
+  # P99 csv log 已经去重，但包含大量非二进制文件 -> 这里进行预过滤
+  # 过滤掉: .git文件, Git pack, image data, ASCII text, Unicode text, 压缩数据, 归档文件等
   export FILE_ARR=()
   mapfile -t FILE_ARR < <(grep -v "\/\.git\|Git\ pack\|image\ data\|ASCII\ text\|Unicode\ text\|\ compressed\ data\|\ archive" "${P99_CSV_LOG}" | cut -d ';' -f2 | sort -u || true)
   local lFILE=""
   local lBIN=""
   local lBIN_FILE=""
 
-  # set default confidence level
-  # 1 -> very-low
-  # 2 -> low
-  # 3 -> medium
-  # 4 -> high
+  # 设置默认置信度级别
+  # 1 -> very-low (极低)
+  # 2 -> low (低)
+  # 3 -> medium (中) - 默认
+  # 4 -> high (高)
   export CONFIDENCE_LEVEL=3
 
+  # 第2步: 如果S08模块已运行，检查包管理器环境以优化版本检测
+  # 跳过已由包管理器处理的软件包，减少重复检测
   if [[ " ${MODULES_EXPORTED[*]} " == *S08* ]]; then
     print_output "[*] Checking for common package manager environments to optimize static version detection"
     # Debian:
@@ -146,7 +173,8 @@ S09_firmware_base_version_check() {
     print_output "[*] Info: No SBOM package manager analysis modules enabled"
   fi
 
-  # lets start generating the strings from all our relevant binaries
+  # 第3步: 为所有相关二进制文件生成strings输出
+  # strings命令提取二进制文件中的可打印字符串，用于后续版本匹配
   print_output "[*] Generate strings overview for static version analysis of ${ORANGE}${#FILE_ARR[@]}${NC} files ..."
   if ! [[ -d "${LOG_PATH_MODULE}"/strings_bins ]]; then
     mkdir "${LOG_PATH_MODULE}"/strings_bins || true 2>/dev/null
@@ -168,9 +196,15 @@ S09_firmware_base_version_check() {
   echo "S09_strings_generated" > "${TMP_DIR}/S09_strings_generated.tmp"
   print_ln
 
+  # 第4步: 识别发行版类型
   lOS_IDENTIFIED=$(distri_check)
+
+  # 第5步: 加载版本识别规则并并行执行检测
+  # 遍历config/bin_version_identifiers/目录下的所有JSON配置文件
+  # 每个JSON文件定义了一组版本检测规则
   local WAIT_PIDS_S09_main=()
   for lVERSION_JSON_CFG in "${lVERSION_IDENTIFIER_CFG_ARR[@]}"; do
+    # 启动线程化版本标识符检测
     S09_identifier_threadings "${lVERSION_JSON_CFG}" "${lOS_IDENTIFIED}" &
     local lTMP_PID="$!"
     WAIT_PIDS_S09_main+=( "${lTMP_PID}" )
@@ -191,6 +225,12 @@ S09_firmware_base_version_check() {
 }
 
 S09_identifier_threadings() {
+  # S09版本标识符线程化处理函数
+  # 解析JSON配置文件，提取版本检测规则，并在二进制文件中匹配
+  #
+  # 参数:
+  #   $1 - lVERSION_JSON_CFG: 版本标识符JSON配置文件路径
+  #   $2 - lOS_IDENTIFIED: 识别的发行版类型
   local lVERSION_JSON_CFG="${1:-}"
 
   local lAPP_NAME=""
@@ -214,8 +254,12 @@ S09_identifier_threadings() {
   local lSTRICT_VERSION_IDENTIFIER_ARR=()
   local lZGREP_VERSION_IDENTIFIER_ARR=()
 
+  # 从JSON配置文件中提取各项配置参数
+  # parsing_mode: 解析模式 (normal/strict/zgrep)
   mapfile -t lPARSING_MODE_ARR < <(jq -r .parsing_mode[] "${lVERSION_JSON_CFG}")
   # print_output "[*] Testing json config ${ORANGE}${lVERSION_JSON_CFG}${NC}" "no_log"
+
+  # identifier: 规则标识符 (如 busybox, openssl等)
   local lRULE_IDENTIFIER=""
   lRULE_IDENTIFIER=$(jq -r .identifier "${lVERSION_JSON_CFG}" || print_error "[-] Error in parsing ${lVERSION_JSON_CFG}")
   mapfile -t lLICENSES_ARR < <(jq -r .licenses[] "${lVERSION_JSON_CFG}" 2>/dev/null || true)
@@ -272,6 +316,9 @@ S09_identifier_threadings() {
     fi
   fi
 
+  # 根据解析模式执行不同的检测策略
+  # 模式1: strict (严格模式)
+  #   仅在lAFFECTED_PATHS_ARR指定路径下的二进制文件上使用正则表达式
   if [[ "${lPARSING_MODE_ARR[*]}" == *"strict"* ]]; then
     # strict mode
     #   use the defined regex only on a binary with path/name from lAFFECTED_PATHS_ARR
@@ -323,6 +370,9 @@ S09_identifier_threadings() {
     print_dot
   fi
 
+  # 模式2: zgrep (压缩文件grep模式)
+  #   在JSON配置指定的文件上使用zgrep正则表达式搜索
+  #   适用于压缩文件(如.gz)内的二进制
   if [[ "${lPARSING_MODE_ARR[*]}" == *"zgrep"* ]]; then
     # zgrep mode:
     #   search for files configured in json config
@@ -355,7 +405,9 @@ S09_identifier_threadings() {
     print_dot
   fi
 
-  # This is the default mode!
+  # 模式3: normal (普通模式) - 默认模式
+  #   在strings输出上使用grep正则表达式进行版本匹配
+  #   这是最常用的检测模式
   if [[ "${lPARSING_MODE_ARR[*]}" == *"normal"* ]]; then
     print_dot
     # print_output "[*] FIRMWARE: ${FIRMWARE} / RTOS: ${RTOS} / FIRMWARE_PATH: ${FIRMWARE_PATH} / FIRMWARE_PATH_BAK: ${FIRMWARE_PATH_BAK}" "no_log"

@@ -14,7 +14,20 @@
 # Author(s): Michael Messner
 # Contributor(s): Benedikt Kuehne
 
-# Description: Identifies the main Linux distribution like Kali Linux, Debian, Fedora or OpenWRT
+# Description:  Linux发行版识别模块
+#               识别主流Linux发行版如Kali Linux, Debian, Fedora, OpenWRT等
+#               通过分析os-release, lsb-release等文件获取发行版信息
+#               支持提取CPE和PURL标准化标识符
+#
+# 依赖配置:
+#   - config/distri_id.cfg: 发行版识别规则
+#   - config/distri_version.cfg: 版本识别规则
+#
+# 工作流程:
+#   1. 从配置文件读取识别规则
+#   2. 遍历规则匹配发行版特征文件
+#   3. 提取版本信息和校验和
+#   4. 生成CSV格式的识别结果
 
 S06_distribution_identification()
 {

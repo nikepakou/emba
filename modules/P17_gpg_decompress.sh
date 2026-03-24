@@ -13,12 +13,25 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Extracts gpg compressed (not encrypted) firmware images
-#               This technique is used by Linksys/Belkin
+# Description: GPG压缩固件提取模块(已弃用)
+# 依赖工具: gpg, binwalk
+#             - gpg: GNU Privacy Guard,用于解压GPG压缩数据
+#             - binwalk: 二次提取
+#
+# 环境变量:
+#   - GPG_COMPRESS: GPG压缩检测标志
+#
+# 模块状态: 已弃用
+#   - binwalk现在可以处理此类文件
+#   - 仅当GPG_COMPRESS=666时运行(调试用)
+# 使用者: Linksys/Belkin等厂商
 
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# 预检线程模式
 export PRE_THREAD_ENA=0
 
+# P17_gpg_decompress - GPG解压主函数(已弃用)
+# 功能: 解压GPG压缩的固件
+# 条件: GPG_COMPRESS=666 (调试模式)
 P17_gpg_decompress() {
   local lNEG_LOG=0
 
@@ -39,6 +52,8 @@ P17_gpg_decompress() {
   fi
 }
 
+# gpg_decompress_extractor - GPG解压核心函数
+# 功能: 使用gpg解压,再用binwalk提取
 gpg_decompress_extractor() {
   local lGPG_FILE_PATH_="${1:-}"
   local lEXTRACTION_FILE_="${2:-}"

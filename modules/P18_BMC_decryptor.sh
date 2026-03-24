@@ -13,12 +13,21 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Decrypts and extracts firmware images from Supermicro BMC
-#               Using https://github.com/c0d3z3r0/smcbmc
+# Description: Supermicro BMC加密固件解密模块
+# 依赖工具: smcbmc.py, binwalk
+#             - smcbmc: Supermicro BMC解密工具
+#               https://github.com/c0d3z3r0/smcbmc
+#
+# 环境变量:
+#   - BMC_ENC_DETECTED: BMC加密检测标志
+#   - FIRMWARE_PATH: 固件路径
 
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# 预检线程模式
 export PRE_THREAD_ENA=0
 
+# P18_BMC_decryptor - BMC解密主函数
+# 功能: 解密Supermicro BMC加密固件
+# 条件: BMC_ENC_DETECTED=1
 P18_BMC_decryptor() {
   local lNEG_LOG=0
 
@@ -38,6 +47,8 @@ P18_BMC_decryptor() {
   fi
 }
 
+# bmc_extractor - BMC解密核心函数
+# 功能: 使用smcbmc解密后用binwalk提取
 bmc_extractor() {
   local lBMC_FILE_PATH_="${1:-}"
   local lEXTRACTION_FILE_="${2:-}"

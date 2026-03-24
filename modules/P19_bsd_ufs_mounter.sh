@@ -13,10 +13,19 @@
 #
 # Author(s): Michael Messner
 
-# Description: Mounts and extracts BSD UFS images
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: BSD UFS文件系统挂载提取模块
+# 依赖工具: mount, umount, lsmod
+#             - mount: 挂载UFS文件系统(需要ufs内核模块)
+#
+# 环境变量:
+#   - BSD_UFS: BSD UFS检测标志
+
+# 预检线程模式
 export PRE_THREAD_ENA=0
 
+# P19_bsd_ufs_mounter - UFS提取主函数
+# 功能: 挂载提取BSD UFS文件系统
+# 条件: BSD_UFS=1
 P19_bsd_ufs_mounter() {
   local lNEG_LOG=0
 
@@ -40,6 +49,8 @@ P19_bsd_ufs_mounter() {
   fi
 }
 
+# ufs_extractor - UFS提取核心函数
+# 功能: 挂载UFS并提取文件
 ufs_extractor() {
   local lUFS_PATH_="${1:-}"
   local lEXTRACTION_DIR_="${2:-}"

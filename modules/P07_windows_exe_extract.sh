@@ -13,6 +13,28 @@
 #
 # Author(s): Michael Messner
 
+# Description: Windows可执行文件提取模块
+# 依赖工具: 7z, binwalk
+#             - 7z: 7-Zip文件归档工具,支持多种格式(EXE, MSI, CAB等)
+#             - binwalk: 备选提取工具
+#
+# 环境变量:
+#   - WINDOWS_EXE: Windows可执行文件检测标志
+#   - FIRMWARE_PATH: 固件路径
+#   - LOG_DIR: 日志目录
+#   - P99_CSV_LOG: P99模块CSV日志
+#
+# 模块定位:
+#   - 当P02检测到Windows可执行文件时运行
+#   - 使用7z提取EXE/MSI/CAB等Windows安装包
+#   - 失败时使用binwalk作为备选
+#   - 支持嵌套提取:EXE可能包含其他EXE
+#
+# 支持格式:
+#   - EXE: Windows可执行文件
+#   - MSI: Windows Installer安装包
+#   - CAB: Windows Cabinet归档
+
 # The documentation can be generated with the following command:
 # perl -ne "s/^\t+//; print if m/END_OF_DOCS'?\$/ .. m/^\s*'?END_OF_DOCS'?\$/ and not m/END_OF_DOCS'?$/;" modules/template_module.sh
 # or with pod2text modules/template_module.sh
@@ -116,6 +138,18 @@ Michael Messner
 END_OF_DOCS
 
 
+# P07_windows_exe_extract - Windows可执行文件提取主函数
+# 功能: 提取Windows可执行文件中的内容
+# 参数: 无 (使用全局环境变量)
+# 返回: 提取结果日志
+#
+# 提取条件: WINDOWS_EXE=1
+#
+# 提取流程:
+#   1. 检查WINDOWS_EXE标志
+#   2. 创建提取目录
+#   3. 调用exe_extractor进行提取
+#   4. 更新FIRMWARE_PATH到提取目录
 P07_windows_exe_extract() {
   local lNEG_LOG=0
 
@@ -137,6 +171,22 @@ P07_windows_exe_extract() {
   fi
 }
 
+# exe_extractor - EXE提取核心函数
+# 功能: 使用7z提取Windows可执行文件
+# 参数:
+#   $1 - lFIRMWARE_PATH: 要提取的EXE文件路径
+#   $2 - lEXTRACTION_DIR: 提取输出目录
+# 返回: 提取的文件保存到目录
+#
+# 提取策略:
+#   1. 使用7z x命令提取
+#   2. 检查提取是否有错误
+#   3. 如有错误,使用binwalk作为备选
+#   4. 对提取的文件进行架构分析
+#
+# 错误处理:
+#   - 如果7z提取失败,尝试binwalk提取
+#   - 支持EXE内部嵌套的EXE文件提取
 exe_extractor() {
   sub_module_title "Windows exe extractor"
 

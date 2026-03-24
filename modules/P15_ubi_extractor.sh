@@ -13,10 +13,27 @@
 #
 # Author(s): Michael Messner
 
-# Description: As binwalk has issues with UBI filesystems we are going to extract them here
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: UBI文件系统提取模块
+# 依赖工具: ubireader_extract_images, ubireader_extract_files
+#             - ubireader: UBI/UBIFS读取工具
+#               https://github.com/jrspruitt/ubi_reader
+#
+# 环境变量:
+#   - UBI_IMAGE: UBI文件系统检测标志
+#   - FIRMWARE_PATH: 固件路径
+#
+# 模块定位:
+#   - 当P02检测到UBI镜像时运行
+#   - 原因: binwalk处理UBI有问题
+#   - 使用ubireader进行专用提取
+
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
 export PRE_THREAD_ENA=0
 
+# P15_ubi_extractor - UBI提取主函数
+# 功能: 提取UBI/UBIFS文件系统
+# 参数: 无
+# 条件: UBI_IMAGE=1
 P15_ubi_extractor() {
   local lNEG_LOG=0
 
@@ -39,6 +56,15 @@ P15_ubi_extractor() {
   fi
 }
 
+# ubi_extractor - UBI提取核心函数
+# 功能: 使用ubireader提取UBI/UBIFS
+# 参数:
+#   $1 - lUBI_PATH: UBI文件路径
+#   $2 - lEXTRACTION_DIR_: 输出目录
+# 流程:
+#   1. ubireader_extract_images: 提取镜像
+#   2. ubireader_extract_files: 提取文件
+#   3. 递归提取嵌套UBIfs镜像
 ubi_extractor() {
   local lUBI_PATH="${1:-}"
   local lEXTRACTION_DIR_="${2:-}"

@@ -13,11 +13,16 @@
 #
 # Author(s): Michael Messner
 
-# Description: Extracts encrypted firmware images from the vendor Buffalo
-#              See https://modemizer.wordpress.com/2015/08/05/restoring-the-original-buffalo-firmware-on-the-wbmr-hp-g300h/
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: Buffalo(巴比禄)加密固件解密模块
+# 环境变量:
+#   - BUFFALO_ENC_DETECTED: Buffalo加密检测
+# 用途: 解密Buffalo网络设备的加密固件
+
+# 预检线程模式
 export PRE_THREAD_ENA=0
 
+# P21_buffalo_decryptor - Buffalo解密主函数
+# 条件: BUFFALO_ENC_DETECTED!=0
 P21_buffalo_decryptor() {
   local lNEG_LOG=0
 

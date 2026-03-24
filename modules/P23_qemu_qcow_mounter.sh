@@ -13,10 +13,16 @@
 #
 # Author(s): Michael Messner
 
-# Description: Mounts and extracts Qemu QCOW2 images
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: QEMU QCOW2虚拟机磁盘挂载提取模块
+# 依赖工具: guestfish, virt-filesystems
+# 环境变量:
+#   - QCOW_DETECTED: QCOW检测标志
+
+# 预检线程模式
 export PRE_THREAD_ENA=0
 
+# P23_qemu_qcow_mounter - QCOW提取主函数
+# 条件: QCOW_DETECTED=1
 P23_qemu_qcow_mounter() {
   local lNEG_LOG=0
   if [[ "${QCOW_DETECTED}" -eq 1 ]]; then

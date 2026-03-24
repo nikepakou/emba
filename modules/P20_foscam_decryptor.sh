@@ -13,13 +13,22 @@
 #
 # Author(s): Michael Messner
 
-# Description: Extracts encrypted firmware images from the vendor Foscam
-#              See https://github.com/pr0v3rbs/FirmAE/issues/21
-#              See https://northwave-security.com/de/blog-abusing-ip-cameras-for-red-teaming-part-1-obtaining-the-firmware/
-#              See https://github.com/mcw0/PoC/blob/master/decrypt-foscam.py
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: Foscam摄像头加密固件解密模块
+# 依赖工具: openssl, decrypt-foscam.py
+#             - openssl: OpenSSL解密
+#             - decrypt-foscam.py: Foscam专用解密工具
+#
+# 环境变量:
+#   - OPENSSL_ENC_DETECTED: OpenSSL加密检测
+#
+# 用途: 解密Foscam IP摄像头的加密固件
+
+# 预检线程模式
 export PRE_THREAD_ENA=0
 
+# P20_foscam_decryptor - Foscam解密主函数
+# 功能: 解密Foscam加密固件
+# 条件: OPENSSL_ENC_DETECTED!=0
 P20_foscam_decryptor() {
   local lNEG_LOG=0
 
@@ -38,6 +47,8 @@ P20_foscam_decryptor() {
   fi
 }
 
+# foscam_enc_extractor - Foscam解密核心函数
+# 功能: 使用OpenSSL和密钥文件解密Foscam固件
 foscam_enc_extractor() {
   local lFOSCAM_ENC_PATH_="${1:-}"
   local lEXTRACTION_FILE_="${2:-}"

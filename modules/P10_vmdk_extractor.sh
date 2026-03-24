@@ -13,10 +13,34 @@
 #
 # Author(s): Michael Messner
 
-# Description: Extracts vmdk images
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: VMware VMDK虚拟机磁盘提取模块
+# 依赖工具: virt-filesystems, guestfish, 7z, tar
+#             - virt-filesystems: 列出虚拟磁盘中的文件系统
+#             - guestfish: libguestfs工具,用于访问虚拟机磁盘
+#             - 7z: 备选提取工具
+#             - tar: 提取归档文件
+#
+# 环境变量:
+#   - VMDK_DETECTED: VMDK检测标志
+#   - FIRMWARE_PATH: 固件路径
+#   - LOG_DIR: 日志目录
+#   - P99_CSV_LOG: P99模块CSV日志
+#
+# 模块定位:
+#   - 当P02检测到VMware VMDK镜像时运行
+#   - 使用virt-filesystems枚举VMDK中的文件系统
+#   - 使用guestfish提取各个分区
+#   - 禁用unblob(VMDK有兼容性问题)
+
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
 export PRE_THREAD_ENA=0
 
+# P10_vmdk_extractor - VMDK提取主函数
+# 功能: 提取VMware VMDK虚拟机磁盘中的内容
+# 参数: 无 (使用全局环境变量)
+# 返回: 提取结果日志
+#
+# 提取条件: VMDK_DETECTED=1
 P10_vmdk_extractor() {
   local lNEG_LOG=0
 
@@ -37,6 +61,19 @@ P10_vmdk_extractor() {
   fi
 }
 
+# vmdk_extractor - VMDK提取核心函数
+# 功能: 使用virt-filesystems和guestfish提取VMDK内容
+# 参数:
+#   $1 - lVMDK_PATH_: VMDK文件路径
+#   $2 - lEXTRACTION_DIR_: 提取输出目录
+# 返回: 提取的文件保存到目录
+#
+# 提取流程:
+#   1. virt-filesystems枚举VMDK中的设备
+#   2. 如失败,使用7z备选提取
+#   3. 对每个设备使用guestfish提取
+#   4. 导出为tgz格式并解压
+#   5. 禁用unblob(有兼容性问题)
 vmdk_extractor() {
   local lVMDK_PATH_="${1:-}"
   local lEXTRACTION_DIR_="${2:-}"

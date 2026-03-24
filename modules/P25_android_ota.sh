@@ -13,10 +13,17 @@
 #
 # Author(s): Michael Messner
 
-# Description: Extracts Android OTA update files - see https://github.com/e-m-b-a/emba/issues/233
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: Android OTA更新包提取模块
+# 依赖工具: payload_dumper.py
+#             - 用于提取Android payload.bin中的分区镜像
+# 环境变量:
+#   - ANDROID_OTA: Android OTA检测标志
+
+# 预检线程模式
 export PRE_THREAD_ENA=0
 
+# P25_android_ota - Android OTA提取主函数
+# 条件: ANDROID_OTA=1
 P25_android_ota() {
   local lNEG_LOG=0
   if [[ "${ANDROID_OTA}" -eq 1 ]]; then
@@ -37,6 +44,8 @@ P25_android_ota() {
   fi
 }
 
+# android_ota_extractor - OTA提取核心函数
+# 功能: 使用payload_dumper.py提取Android OTA
 android_ota_extractor() {
   local lOTA_INIT_PATH_="${1:-}"
   local lEXTRACTION_DIR_="${2:-}"

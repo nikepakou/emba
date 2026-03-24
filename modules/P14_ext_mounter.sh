@@ -13,10 +13,28 @@
 #
 # Author(s): Michael Messner
 
-# Description: Mounts and extracts extX images (currently binwalk destroys the permissions and the symlinks)
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# Description: EXT文件系统挂载提取模块
+# 依赖工具: mount, umount, cp
+#             - mount: 挂载EXT2/3/4文件系统
+#             - umount: 卸载文件系统
+#             - cp: 复制文件
+#
+# 环境变量:
+#   - EXT_IMAGE: EXT文件系统检测标志
+#   - FIRMWARE_PATH: 固件路径
+#
+# 模块定位:
+#   - 当P02检测到EXT文件系统镜像时运行
+#   - 原因: binwalk会破坏权限和符号链接
+#   - 直接挂载可保留文件权限和链接
+
+# 预检线程模式 - 如果设置为1,这些模块将以线程模式运行
 export PRE_THREAD_ENA=0
 
+# P14_ext_mounter - EXT文件系统提取主函数
+# 功能: 挂载并提取EXT2/3/4文件系统
+# 参数: 无
+# 提取条件: EXT_IMAGE=1
 P14_ext_mounter() {
   local lNEG_LOG=0
   if [[ "${EXT_IMAGE:-0}" -eq 1 ]]; then
@@ -39,6 +57,12 @@ P14_ext_mounter() {
   fi
 }
 
+# ext_extractor - EXT提取核心函数
+# 功能: 挂载EXT文件系统并提取文件
+# 参数:
+#   $1 - lEXT_PATH_: EXT文件系统文件路径
+#   $2 - lEXTRACTION_DIR_: 提取输出目录
+# 流程: 挂载->复制->卸载->清理
 ext_extractor() {
   local lEXT_PATH_="${1:-}"
   local lEXTRACTION_DIR_="${2:-}"

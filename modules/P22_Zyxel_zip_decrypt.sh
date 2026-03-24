@@ -13,14 +13,16 @@
 #
 # Author(s): Michael Messner
 
-# Description:  Extracts Zyxel firmware images that are protected with a password
-#               Further information can be found in this paper:
-#               https://media.defcon.org/DEF%20CON%2030/DEF%20CON%2030%20presentations/Jay%20Lagorio%20-%20Tear%20Down%20this%20Zywall%20Breaking%20Open%20Zyxel%20Encrypted%20Firmware.pdf
-#               Thanks to https://twitter.com/jaylagorio
+# Description: ZyXel密码保护固件ZIP解密模块
+# 环境变量:
+#   - ZYXEL_ZIP: ZyXel加密ZIP检测
+# 用途: 解密ZyXel路由器/防火墙的密码保护固件
 
-# Pre-checker threading mode - if set to 1, these modules will run in threaded mode
+# 预检线程模式
 export PRE_THREAD_ENA=0
 
+# P22_Zyxel_zip_decrypt - ZyXel解密主函数
+# 条件: ZYXEL_ZIP=1
 P22_Zyxel_zip_decrypt() {
   local lNEG_LOG=0
 

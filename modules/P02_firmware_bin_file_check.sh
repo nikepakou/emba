@@ -159,7 +159,14 @@ get_fw_file_details() {
   MD5_CHECKSUM="$(md5sum "${lFIRMWARE_PATH_BIN}" | awk '{print $1}')"
   write_csv_log "MD5" "${MD5_CHECKSUM:-}" "NA"
 
-  # entropy checking on binary file
+  # 使用 ent 工具计算固件文件的熵值
+  # 1.判断数据是否加密或压缩
+  #   高熵值（接近8）：数据可能是加密或压缩的
+  #   低熵值（接近0）：数据可能是明文或未压缩的
+  # 2.识别固件中的不同区域
+  #   代码区域：中等熵值
+  #   数据区域：低熵值
+  #   加密/压缩区域：高熵值
   ENTROPY="$(ent "${lFIRMWARE_PATH_BIN}" | grep Entropy | sed -e 's/^Entropy\ \=\ //')"
   write_csv_log "Entropy" "${ENTROPY:-}" "NA"
 }
@@ -332,28 +339,66 @@ fw_bin_detector() {
 
   set_p02_default_exports
 
+  # 使用 strings 命令提取文件中的可打印字符串，保存到日志文件
+  # 后台运行以提高效率，同时获取进程ID用于等待
   strings "${lCHECK_FILE}" > "${LOG_PATH_MODULE}/strings_${lCHECK_FILE_NAME}.txt" &
-  local lTMP_PID="$!"
+  local lTMP_PID="$!"  # 获取 strings 命令的进程ID
+
+  # 使用 file 命令识别文件类型，返回如 "ELF", "gzip compressed data" 等信息
   lFILE_BIN_OUT=$(file "${lCHECK_FILE}")
+
+  # 使用 hexdump 以可读格式显示文件的前16字节内容，提取第一行用于魔数识别
+  # -C 参数：以十六进制+ASCII格式显示，便于识别文件头
+  # head -1：只取第一行，即文件开头
   lHEX_FIRST_LINE=$(hexdump -C "${lCHECK_FILE}" | head -1 || true)
+
+  # 等待 strings 命令后台任务完成，确保字符串提取完成后再继续
   wait_for_pid "${lTMP_PID}"
+
+  # 检查AVM固件特征：搜索AVM GmbH版权字符串
+  # grep -c：统计匹配的行数
+  # 支持两种格式："AVM GmbH ... All rights reserved." 和 "(C) Copyright ... AVM"
   lAVM_CHECK=$(grep -c "AVM GmbH .*. All rights reserved.\|(C) Copyright .* AVM" "${LOG_PATH_MODULE}/strings_${lCHECK_FILE_NAME}.txt" || true)
+
+  # 检查Supermicro BMC固件特征：搜索 libipmi.so 字符串
+  # libipmi.so 是智能平台管理接口(IPMI)库，BMC固件的典型组件
   lBMC_CHECK=$(grep -c "libipmi.so" "${LOG_PATH_MODULE}/strings_${lCHECK_FILE_NAME}.txt" || true)
+
+  # SBOM_MINIMAL模式检查：如果不是最小SBOM模式，则执行详细分析
   if [[ "${SBOM_MINIMAL:-0}" -ne 1 ]]; then
+    # 检查大疆PRAK加密固件：搜索加密密钥相关字符串
+    # PRAK/RREK/IAEK/PUEK是大疆固件加密使用的密钥类型标识
     lDJI_PRAK_ENC_CHECK=$(grep -c "PRAK\|RREK\|IAEK\|PUEK" "${LOG_PATH_MODULE}/strings_${lCHECK_FILE_NAME}.txt" || true)
+
+    # 检查大疆XV4加密固件：搜索特定的十六进制模式 0x785634
+    # grep -b：在二进制文件中搜索匹配的位置
+    # grep -o：只输出匹配的部分
+    # grep -U：将内容视为二进制数据
+    # grep -a：将二进制文件当作文本处理
+    # grep -P：使用Perl正则表达式
     lDJI_XV4_ENC_CHECK=$(grep -boUaP "\x78\x56\x34" "${lCHECK_FILE}" | grep -c "^0:"|| true)
+
+    # 运行 binwalk 工具分析固件文件，识别文件系统、内核、压缩数据等
+    # 将完整输出保存到日志文件供后续分析
     # we are running binwalk on the file to analyze the output afterwards:
     "${BINWALK_BIN[@]}" "${lCHECK_FILE}" > "${LOG_PATH_MODULE}"/p02_binwalk_output.txt || true
+
+    # 检查威联通(QNAP)加密固件
     if [[ -f "${LOG_PATH_MODULE}"/p02_binwalk_output.txt ]]; then
+      # 方法1：从binwalk输出文件中搜索"qnap encrypted"字符串
       lQNAP_ENC_CHECK=$(grep -a -i "qnap encrypted" "${LOG_PATH_MODULE}"/p02_binwalk_output.txt || true)
     else
+      # 方法2：binwalk输出文件不存在时，直接使用binwalk的-y选项搜索
       lQNAP_ENC_CHECK=$("${BINWALK_BIN[@]}" -y "qnap encrypted" "${lCHECK_FILE}")
     fi
 
+    # 检查UEFI/BIOS固件特征（初步检测）
     # the following check is very weak. It should be only an indicator if the firmware could be a UEFI/BIOS firmware
     # further checks will follow in P35
+    # 从binwalk输出中搜索UEFI或BIOS字符串
     lUEFI_CHECK=$(grep -c "UEFI\|BIOS" "${LOG_PATH_MODULE}"/p02_binwalk_output.txt || true)
-    lUEFI_CHECK=$(( "${lUEFI_CHECK}" + "$(grep -c "UEFI\|BIOS" "${LOG_PATH_MODULE}/strings_${lCHECK_FILE_NAME}.txt" || true)" ))
+    # 从strings输出中搜索UEFI或BIOS字符串，累加匹配次数
+    lUEFI_CHECK=$(("${lUEFI_CHECK}" + "$(grep -c "UEFI\|BIOS" "${LOG_PATH_MODULE}/strings_${lCHECK_FILE_NAME}.txt" || true)" ))
   fi
 
   if [[ -f "${KERNEL_CONFIG}" ]] && [[ "${KERNEL}" -eq 1 ]]; then

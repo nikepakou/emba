@@ -24,7 +24,7 @@
 #
 # 环境变量:
 #   - UEFI_DETECTED: 标记是否检测到UEFI固件 (1=是, 0=否)
-#   - RTOS: 标记是否为实时操作系统固件 (1=是, 0=否)
+#   - RTOS: 标记是否为实时操作系统固件，初始默认为1 (1=是, 0=否)
 #   - UEFI_VERIFIED: 标记UEFI固件是否验证成功 (1=成功, 0=未验证)
 #   - UEFI_AMI_CAPSULE: 标记是否检测到AMI capsule固件
 #   - FILES_UEFI: 提取的UEFI文件数量

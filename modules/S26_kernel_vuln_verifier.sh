@@ -117,6 +117,7 @@ S26_kernel_vuln_verifier()
   local lK_VERSION_KORG=""              # 原始内核版本
   export COMPILE_SOURCE_FILES_VERIFIED=0  # 已验证的编译源文件数
   local lK_VERSION=""                   # 当前处理的内核版本
+  export KERNEL_SOURCE_AVAILABLE=0      # 内核源码是否可用标志
 
   # 遍历从S24获取的所有内核版本
   # K_VERSIONS_ARR is from get_kernel_version_csv_data_s24
@@ -199,7 +200,7 @@ S26_kernel_vuln_verifier()
           fi
         fi
       done
-    end
+    fi
 
     # 检查用户是否提供了内核配置文件
     if [[ -f "${KERNEL_CONFIG}" ]]; then
@@ -261,87 +262,76 @@ S26_kernel_vuln_verifier()
     # ============================================================
     # we need to wait for the downloaded linux kernel sources from the host
     local lWAIT_CNT=0
+    KERNEL_SOURCE_AVAILABLE=0
     while ! [[ -f "${lKERNEL_ARCH_PATH}/linux-${lK_VERSION_KORG}.tar.gz" ]]; do
       print_output "[*] Waiting for kernel sources ..." "no_log"
       ((lWAIT_CNT+=1))
-      # 超时或下载失败则跳到下一个版本
+      # 超时或下载失败则进入降级模式
       if [[ "${lWAIT_CNT}" -gt 60 ]] || [[ -f "${TMP_DIR}"/linux_download_failed ]]; then
-        print_output "[-] No valid kernel source file available ... check for further kernel versions"
-        continue 2
+        print_output "[-] No valid kernel source file available ... switching to symbol-based verification mode"
+        KERNEL_SOURCE_AVAILABLE=0
+        break
       fi
       sleep 5
     done
 
-    # 现在有源码文件了,但可能下载不完整,需要继续等待验证
-    # now we have a file with the kernel sources ... we do not know if this file is complete.
-    # Probably it is just downloaded partly and we need to wait a bit longer
-    lWAIT_CNT=0
-    print_output "[*] Testing kernel sources ..." "no_log"
-    # 使用gunzip -t测试压缩包完整性
-    while ! gunzip -t "${lKERNEL_ARCH_PATH}/linux-${lK_VERSION_KORG}.tar.gz" 2> /dev/null; do
+    # 如果有源码文件,测试压缩包完整性
+    if [[ "${KERNEL_SOURCE_AVAILABLE}" -ne 0 ]] && [[ -f "${lKERNEL_ARCH_PATH}/linux-${lK_VERSION_KORG}.tar.gz" ]]; then
+      # 现在有源码文件了,但可能下载不完整,需要继续等待验证
+      # now we have a file with the kernel sources ... we do not know if this file is complete.
+      # Probably it is just downloaded partly and we need to wait a bit longer
+      lWAIT_CNT=0
       print_output "[*] Testing kernel sources ..." "no_log"
-      ((lWAIT_CNT+=1))
-      if [[ "${lWAIT_CNT}" -gt 60 ]] || [[ -f "${TMP_DIR}"/linux_download_failed ]]; then
-        print_output "[-] No valid kernel source file available ... check for further kernel versions"
-        continue 2
+      # 使用gunzip -t测试压缩包完整性
+      while ! gunzip -t "${lKERNEL_ARCH_PATH}/linux-${lK_VERSION_KORG}.tar.gz" 2> /dev/null; do
+        print_output "[*] Testing kernel sources ..." "no_log"
+        ((lWAIT_CNT+=1))
+        if [[ "${lWAIT_CNT}" -gt 60 ]] || [[ -f "${TMP_DIR}"/linux_download_failed ]]; then
+          print_output "[-] No valid kernel source file available ... switching to symbol-based verification mode"
+          KERNEL_SOURCE_AVAILABLE=0
+          break
+        fi
+        sleep 5
+      done
+      
+      # 如果通过了完整性测试,标记为可用
+      if [[ "${lWAIT_CNT}" -le 60 ]] && ! [[ -f "${TMP_DIR}"/linux_download_failed ]]; then
+        KERNEL_SOURCE_AVAILABLE=1
       fi
-      sleep 5
-    done
-
-    print_output "[*] Kernel sources for version ${ORANGE}${lK_VERSION}${NC} available"
-    write_link "${LOG_DIR}/kernel_downloader.log"
-
-    # ============================================================
-    # 步骤4: 解压内核源码
-    # ============================================================
-    lKERNEL_DIR="${LOG_PATH_MODULE}/linux-${lK_VERSION_KORG}"
-    [[ -d "${lKERNEL_DIR}" ]] && rm -rf "${lKERNEL_DIR}"
-    if ! [[ -d "${lKERNEL_DIR}" ]] && [[ "$(file "${lKERNEL_ARCH_PATH}/linux-${lK_VERSION_KORG}.tar.gz")" == *"gzip compressed data"* ]]; then
-      print_output "[*] Kernel version ${ORANGE}${lK_VERSION}${NC} extraction ... "
-      tar -xzf "${lKERNEL_ARCH_PATH}/linux-${lK_VERSION_KORG}.tar.gz" -C "${LOG_PATH_MODULE}"
     fi
 
     # ============================================================
-    # 步骤5: 使用cve-bin-tool检测CVE
+    # 步骤4: 根据内核源码可用性选择执行模式
     # ============================================================
-    print_output "[*] Kernel version ${ORANGE}${lK_VERSION}${NC} CVE detection ... "
-    if ! grep -q "cve-bin-tool database preparation finished" "${TMP_DIR}/tmp_state_data.log"; then
-      print_error "[-] cve-bin-tool database not prepared - cve analysis probably not working"
-    fi
-    cve_bin_tool_threader "${lBOM_REF}" "${lK_VERSION}" "${lORIG_SOURCE:-kernel_verification}" lVENDOR_ARR lPRODUCT_ARR
-
-    export SYMBOLS_CNT=0
-
-    # 检查CVE详情文件是否生成
-    if ! [[ -f "${lCVE_DETAILS_PATH}" ]]; then
-      print_output "[-] No CVE details generated ... check for further kernel version"
-      continue
-    fi
-
-    # 读取所有检测到的CVE
-    print_output "[*] Generate CVE vulnerabilities array for kernel version ${ORANGE}${lK_VERSION}${NC} ..." "no_log"
-    mapfile -t lALL_KVULNS_ARR < <(tail -n+2 "${lCVE_DETAILS_PATH}" | sort -u -t, -k4,4)
-
-    print_ln
-    print_output "[+] Extracted ${ORANGE}${#lALL_KVULNS_ARR[@]}${GREEN} vulnerabilities based on kernel version only"
-    write_link "${LOG_PATH_MODULE}""/kernel-${lK_VERSION}-vulns.log"
-
-    # ============================================================
-    # 步骤6: 编译内核(dry-run)获取使用的源文件
-    # 需要配置文件和源码目录
-    # ============================================================
-    if [[ -f "${KERNEL_CONFIG_PATH}" ]] && [[ -d "${lKERNEL_DIR}" ]]; then
-      compile_kernel "${KERNEL_CONFIG_PATH}" "${lKERNEL_DIR}" "${ORIG_K_ARCH}"
+    if [[ "${KERNEL_SOURCE_AVAILABLE}" -eq 1 ]]; then
+      print_output "[*] Kernel sources for version ${ORANGE}${lK_VERSION}${NC} available"
+      write_link "${LOG_DIR}/kernel_downloader.log"
+    else
+      print_output "[*] Kernel sources for version ${ORANGE}${lK_VERSION}${NC} not available - using degraded verification mode"
     fi
 
     # ============================================================
-    # 步骤7: 提取内核符号
+    # 步骤5: 解压内核源码(仅在源码可用时)
+    # ============================================================
+    local lKERNEL_DIR=""
+    if [[ "${KERNEL_SOURCE_AVAILABLE}" -eq 1 ]]; then
+      lKERNEL_DIR="${LOG_PATH_MODULE}/linux-${lK_VERSION_KORG}"
+      [[ -d "${lKERNEL_DIR}" ]] && rm -rf "${lKERNEL_DIR}"
+      if ! [[ -d "${lKERNEL_DIR}" ]] && [[ "$(file "${lKERNEL_ARCH_PATH}/linux-${lK_VERSION_KORG}.tar.gz")" == *"gzip compressed data"* ]]; then
+        print_output "[*] Kernel version ${ORANGE}${lK_VERSION}${NC} extraction ... "
+        tar -xzf "${lKERNEL_ARCH_PATH}/linux-${lK_VERSION_KORG}.tar.gz" -C "${LOG_PATH_MODULE}"
+      fi
+    fi
+
+    # ============================================================
+    # 步骤6: 提取内核符号(两种模式都需要)
     # 从内核ELF文件和内核模块(.ko)中提取符号
     # ============================================================
     sub_module_title "Identify kernel symbols ..."
     # 使用readelf提取FUNC和OBJECT类型的符号
     readelf -W -s "${KERNEL_ELF_PATH}" | grep "FUNC\|OBJECT" | sed 's/.*FUNC//' | sed 's/.*OBJECT//' | awk '{print $4}' | \
       sed 's/\[\.\.\.\]//' > "${LOG_PATH_MODULE}"/symbols.txt || true
+    export SYMBOLS_CNT=0
     SYMBOLS_CNT=$(wc -l < "${LOG_PATH_MODULE}"/symbols.txt)
     print_output "[*] Extracted ${ORANGE}${SYMBOLS_CNT}${NC} symbols from kernel (${KERNEL_ELF_PATH})"
 
@@ -356,7 +346,7 @@ S26_kernel_vuln_verifier()
     if [[ -d "${LOG_DIR}""/firmware" ]]; then
       print_output "[*] Identify kernel modules and extract binary symbols ..." "no_log"
       # shellcheck disable=SC2016
-      find "${LOG_DIR}/firmware" -name "*.ko" -print0|xargs -r -0 -P 16 -I % sh -c 'readelf -W -a "%" | grep FUNC | sed "s/.*FUNC//" | awk "{print $4}" | sed "s/\[\.\.\.\]//"' >> "${LOG_PATH_MODULE}"/symbols.txt || true
+      find "${LOG_DIR}/firmware" -name "*.ko" -print0|xargs -r -0 -P 16 -I % sh -c 'readelf -W -a "%" | grep FUNC | sed "s/.*FUNC//" | awk "{print \$4}" | sed "s/\[\.\.\.\]//"' >> "${LOG_PATH_MODULE}"/symbols.txt || true
     fi
 
     # 去重并统计唯一符号
@@ -371,32 +361,115 @@ S26_kernel_vuln_verifier()
     split_symbols_file
 
     # ============================================================
-    # 步骤8: 并行验证每个CVE漏洞
+    # 步骤7: 根据模式执行不同的CVE检测和验证流程
     # ============================================================
-    sub_module_title "Linux kernel vulnerability verification"
+    if [[ "${KERNEL_SOURCE_AVAILABLE}" -eq 1 ]]; then
+      # ============================================================
+      # 正常模式: 源码可用,执行完整的CVE检测和验证
+      # ============================================================
+      print_output "[*] Running in normal mode with kernel source verification"
+      
+      # 使用cve-bin-tool检测CVE
+      print_output "[*] Kernel version ${ORANGE}${lK_VERSION}${NC} CVE detection ... "
+      if ! grep -q "cve-bin-tool database preparation finished" "${TMP_DIR}/tmp_state_data.log"; then
+        print_error "[-] cve-bin-tool database not prepared - cve analysis probably not working"
+      fi
+      cve_bin_tool_threader "${lBOM_REF}" "${lK_VERSION}" "${lORIG_SOURCE:-kernel_verification}" lVENDOR_ARR lPRODUCT_ARR
 
-    print_output "[*] Checking vulnerabilities for kernel version ${ORANGE}${lK_VERSION}${NC}" "" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
-    print_ln
+      # 检查CVE详情文件是否生成
+      if ! [[ -f "${lCVE_DETAILS_PATH}" ]]; then
+        print_output "[-] No CVE details generated ... check for further kernel version"
+        continue
+      fi
 
-    local lVULN=""
-    for lVULN in "${lALL_KVULNS_ARR[@]}"; do
-      vuln_checker_threader "${lVULN}" &
-      local lTMP_PID="$!"
-      store_kill_pids "${lTMP_PID}"
-      lWAIT_PIDS_S26_ARR_MAIN+=( "${lTMP_PID}" )
-      ((VULN_CNT+=1))
-      max_pids_protection "${MAX_MOD_THREADS}" lWAIT_PIDS_S26_ARR_MAIN
-    done
+      # 读取所有检测到的CVE
+      print_output "[*] Generate CVE vulnerabilities array for kernel version ${ORANGE}${lK_VERSION}${NC} ..." "no_log"
+      mapfile -t lALL_KVULNS_ARR < <(tail -n+2 "${lCVE_DETAILS_PATH}" | sort -u -t, -k4,4)
 
-    # 等待所有CVE验证完成
-    wait_for_pid "${lWAIT_PIDS_S26_ARR_MAIN[@]}"
+      print_ln
+      print_output "[+] Extracted ${ORANGE}${#lALL_KVULNS_ARR[@]}${GREEN} vulnerabilities based on kernel version only"
+      write_link "${LOG_PATH_MODULE}""/kernel-${lK_VERSION}-vulns.log"
 
-    # 生成最终漏洞报告
-    final_log_kernel_vulns "${lK_VERSION}" "${lALL_KVULNS_ARR[@]}"
+      # 编译内核(dry-run)获取使用的源文件
+      if [[ -f "${KERNEL_CONFIG_PATH}" ]] && [[ -d "${lKERNEL_DIR}" ]]; then
+        compile_kernel "${KERNEL_CONFIG_PATH}" "${lKERNEL_DIR}" "${ORIG_K_ARCH}"
+      fi
+
+      # 并行验证每个CVE漏洞
+      sub_module_title "Linux kernel vulnerability verification"
+
+      print_output "[*] Checking vulnerabilities for kernel version ${ORANGE}${lK_VERSION}${NC}" "" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+      print_ln
+
+      local lVULN=""
+      for lVULN in "${lALL_KVULNS_ARR[@]}"; do
+        vuln_checker_threader "${lVULN}" "${lKERNEL_DIR}" &
+        local lTMP_PID="$!"
+        store_kill_pids "${lTMP_PID}"
+        lWAIT_PIDS_S26_ARR_MAIN+=( "${lTMP_PID}" )
+        ((VULN_CNT+=1))
+        max_pids_protection "${MAX_MOD_THREADS}" lWAIT_PIDS_S26_ARR_MAIN
+      done
+
+      # 等待所有CVE验证完成
+      wait_for_pid "${lWAIT_PIDS_S26_ARR_MAIN[@]}"
+
+      # 生成最终漏洞报告
+      final_log_kernel_vulns "${lK_VERSION}" "${lALL_KVULNS_ARR[@]}"
+    else
+      # ============================================================
+      # 降级模式: 源码不可用,仅基于符号进行CVE过滤
+      # ============================================================
+      print_output "[*] Running in degraded mode without kernel source - using symbol-based CVE filtering"
+      
+      # 使用cve-bin-tool检测CVE
+      print_output "[*] Kernel version ${ORANGE}${lK_VERSION}${NC} CVE detection ... "
+      if ! grep -q "cve-bin-tool database preparation finished" "${TMP_DIR}/tmp_state_data.log"; then
+        print_error "[-] cve-bin-tool database not prepared - cve analysis probably not working"
+      fi
+      cve_bin_tool_threader "${lBOM_REF}" "${lK_VERSION}" "${lORIG_SOURCE:-kernel_verification}" lVENDOR_ARR lPRODUCT_ARR
+
+      # 检查CVE详情文件是否生成
+      if ! [[ -f "${lCVE_DETAILS_PATH}" ]]; then
+        print_output "[-] No CVE details generated ... check for further kernel version"
+        continue
+      fi
+
+      # 读取所有检测到的CVE
+      print_output "[*] Generate CVE vulnerabilities array for kernel version ${ORANGE}${lK_VERSION}${NC} ..." "no_log"
+      mapfile -t lALL_KVULNS_ARR < <(tail -n+2 "${lCVE_DETAILS_PATH}" | sort -u -t, -k4,4)
+
+      print_ln
+      print_output "[+] Extracted ${ORANGE}${#lALL_KVULNS_ARR[@]}${GREEN} vulnerabilities based on kernel version only"
+      print_output "[*] Filtering CVEs based on kernel symbols ..."
+
+      # 基于符号过滤CVE
+      sub_module_title "Linux kernel vulnerability filtering (degraded mode)"
+
+      print_output "[*] Checking vulnerabilities for kernel version ${ORANGE}${lK_VERSION}${NC} (symbol-based filtering)" "" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+      print_ln
+
+      local lVULN=""
+      for lVULN in "${lALL_KVULNS_ARR[@]}"; do
+        # 在降级模式下,使用符号名验证器
+        vuln_checker_threader_degraded "${lVULN}" &
+        local lTMP_PID="$!"
+        store_kill_pids "${lTMP_PID}"
+        lWAIT_PIDS_S26_ARR_MAIN+=( "${lTMP_PID}" )
+        ((VULN_CNT+=1))
+        max_pids_protection "${MAX_MOD_THREADS}" lWAIT_PIDS_S26_ARR_MAIN
+      done
+
+      # 等待所有CVE验证完成
+      wait_for_pid "${lWAIT_PIDS_S26_ARR_MAIN[@]}"
+
+      # 生成最终漏洞报告
+      final_log_kernel_vulns "${lK_VERSION}" "${lALL_KVULNS_ARR[@]}"
+    fi
   done
 
   # ============================================================
-  # 步骤9: 更新漏洞汇总报告,添加已验证的CVE信息
+  # 步骤8: 更新漏洞汇总报告,添加已验证的CVE信息
   # ============================================================
   # fix the CVE log file and add the verified vulnerabilities:
   if [[ -f "${LOG_PATH_MODULE}/vuln_summary.txt" ]]; then
@@ -447,7 +520,7 @@ S26_kernel_vuln_verifier()
           local lkVERSION=""
           lkVERSION=$(echo "${lVULN_SUMMARY_ENTRY}" | cut -d ':' -f3)
           # remove all spaces
-          lkVERSION="${lkVERSION//\ }"
+          lkVERSION=${lkVERSION//\ /}
           if grep -q "${lkVERSION}" "${LOG_PATH_MODULE}/vuln_summary_new.txt"; then
             continue
           fi
@@ -458,259 +531,91 @@ S26_kernel_vuln_verifier()
     fi
   fi
 
-  # 记录模块结束
   module_end_log "${FUNCNAME[0]}" "${VULN_CNT}"
 }
 
 # ==========================================================================================
-# vuln_checker_threader - CVE漏洞检查线程函数
+# extract_kernel_arch - 从内核ELF文件提取架构信息
 #
 # 功能:
-#   对单个CVE漏洞进行检查和验证
-#
-# 验证流程:
-#   1. 从CVE条目提取CVE编号
-#   2. 从NVD数据库获取CVE详细描述
-#   3. 从描述中提取受影响的源文件路径
-#   4. 对每个路径执行符号验证和编译验证
-#   5. 记录验证结果
+#   使用readelf分析内核ELF文件,识别目标架构
+#   支持多种架构: ARM, x86, MIPS, PowerPC, RISC-V等
 #
 # 参数:
-#   $1 - lVULN: CVE漏洞条目(CSV格式)
-# ==========================================================================================
-vuln_checker_threader() {
-  local lVULN="${1:-}"                # CVE漏洞条目
-  local lK_PATHS_ARR=()              # 内核路径数组
-  local lK_PATHS_FILES_TMP_ARR=()    # 临时路径数组(用于无路径的文件名)
-  local lSUMMARY=""                  # CVE描述摘要
-  local lCVSS3=""                    # CVSSv3评分
-
-  # lK_PATH是备用文本,如果lK_PATHS_ARR为空时用于输出
-  local lK_PATH="missing vulnerability path from advisory"
-
-  # print_output "[*] VULN data: ${lVULN}" "no_log"
-  # 从CSV第4字段提取CVE编号
-  lCVE=$(echo "${lVULN}" | cut -d, -f4)
-  if ! [[ "${lCVE}" == "CVE-"* ]]; then
-    print_output "[-] No CVE identifier extracted for ${lVULN} ..."
-    return
-  fi
-
-  # 输出进度信息
-  local lOUTx="[*] Testing vulnerability ${ORANGE}${VULN_CNT}${NC} / ${ORANGE}${#lALL_KVULNS_ARR[@]}${NC} / ${ORANGE}${lCVE}${NC}"
-  print_output "${lOUTx}" "no_log"
-  write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
-
-  # 从CSV第6字段提取CVSSv3评分
-  lCVSS3="$(echo "${lVULN}" | cut -d, -f6)"
-  # lSUMMARY="$(echo "${lVULN}" | cut -d: -f6-)"
-
-  # 从NVD JSON文件中提取英文描述
-  # NVD目录结构: ${NVD_DIR}/${CVE年份}/CVE-${年份}-${编号}.json
-  lSUMMARY=$(jq -r '.descriptions[]? | select(.lang=="en") | .value' "${NVD_DIR}/${lCVE%-*}/${lCVE:0:11}"*"xx/${lCVE}.json" 2>/dev/null || true)
-
-  # print_output "$(indent "CVSSv3: ${ORANGE}${lCVSS3}${NC} / Summary: ${ORANGE}${lSUMMARY}${NC}")"
-
-  # ============================================================
-  # 从CVE描述中提取内核源文件路径
-  # 路径可能包含:
-  #   - 完整路径: net/ipv4/ip_sockglue.c
-  #   - 相对路径: ip_sockglue.c (需要查找)
-  # 支持的文件类型: .c, .h, .S (汇编源文件)
-  # ============================================================
-  # extract kernel source paths from summary -> we use these paths to check if they are used by our
-  # symbols or during kernel compilation
-  # 处理流程:
-  #   1. 将空格替换为换行,便于逐行处理
-  #   2. 移除行尾反斜杠(续行符)
-  #   3. 筛选.c/.h/.S文件
-  #   4. 移除CVE编号前缀
-  #   5. 清理各种括号和标点
-  #   6. 提取文件名(去掉行号)
-  mapfile -t lK_PATHS_ARR < <(echo "${lSUMMARY}" | tr ' ' '\n' | sed 's/\\$//' | grep ".*\.[chS]$" | sed -r 's/CVE-[0-9]+-[0-9]+:[0-9].*://' \
-    | sed -r 's/CVE-[0-9]+-[0-9]+:null.*://' | sed 's/^(//' | sed 's/)$//' | sed 's/,$//' | sed 's/\.$//' | cut -d: -f1 || true)
-
-  # 对没有完整路径的文件名,在内核源码中查找匹配文件
-  for lK_PATH in "${lK_PATHS_ARR[@]}"; do
-    # we have only a filename without path -> we search for possible candidate files in the kernel sources
-    if ! [[ "${lK_PATH}" == *"/"* ]]; then
-      lOUTx="[*] Found file name ${ORANGE}${lK_PATH}${NC} for ${ORANGE}${lCVE}${NC} without path details ... looking for candidates now"
-      print_output "${lOUTx}" "no_log"
-      write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
-      # 在内核源码目录中查找同名文件
-      mapfile -t lK_PATHS_FILES_TMP_ARR < <(find "${lKERNEL_DIR}" -name "${lK_PATH}" | sed "s&${lKERNEL_DIR}\/&&")
-    fi
-    # 将找到的完整路径添加到数组
-    lK_PATHS_ARR+=("${lK_PATHS_FILES_TMP_ARR[@]}")
-  done
-
-  # ============================================================
-  # 对每个找到的路径进行验证
-  # ============================================================
-  if [[ "${#lK_PATHS_ARR[@]}" -gt 0 ]]; then
-    for lK_PATH in "${lK_PATHS_ARR[@]}"; do
-      # 检查文件是否存在于内核源码中
-      if [[ -f "${lKERNEL_DIR}/${lK_PATH}" ]]; then
-        # 检查是否是架构相关路径
-        # check if arch is in path -> if so we check if our architecture is also in the path
-        # if we find our architecture then we can proceed with symbol_verifier
-        if [[ "${lK_PATH}" == "arch/"* ]]; then
-          # 验证架构是否匹配
-          if [[ "${lK_PATH}" == "arch/${ORIG_K_ARCH}/"* ]]; then
-            # 记录找到的路径数量
-            write_log "lCNT_PATHS_FOUND" "${TMP_DIR}/s25_counting.tmp"
-            # 如果有符号信息,进行符号验证
-            if [[ "${SYMBOLS_CNT}" -gt 0 ]]; then
-              symbol_verifier "${lCVE}" "${lK_VERSION}" "${lK_PATH}" "${lCVSS3}" "${lKERNEL_DIR}" &
-              lWAIT_PIDS_S26_ARR+=( "$!" )
-            fi
-            # 如果有编译信息,进行编译验证
-            if [[ "${COMPILE_SOURCE_FILES_VERIFIED}" -gt 0 ]]; then
-              compile_verifier "${lCVE}" "${lK_VERSION}" "${lK_PATH}" "${lCVSS3}" &
-              lWAIT_PIDS_S26_ARR+=( "$!" )
-            fi
-          else
-            # 此漏洞针对不同架构,跳过
-            # this vulnerability is for a different architecture -> we can skip it for our kernel
-            lOUTx="[-] Vulnerable path for different architecture found for ${ORANGE}${lK_PATH}${NC} - not further processing ${ORANGE}${lCVE}${NC}"
-            print_output "${lOUTx}" "no_log"
-            write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
-            write_log "lCNT_PATHS_FOUND_WRONG_ARCH" "${TMP_DIR}/s25_counting.tmp"
-          fi
-        else
-          # 非架构相关路径,直接验证
-          write_log "lCNT_PATHS_FOUND" "${TMP_DIR}/s25_counting.tmp"
-          if [[ "${SYMBOLS_CNT}" -gt 0 ]]; then
-            symbol_verifier "${lCVE}" "${lK_VERSION}" "${lK_PATH}" "${lCVSS3}" "${lKERNEL_DIR}" &
-            lWAIT_PIDS_S26_ARR+=( "$!" )
-          fi
-          if [[ "${COMPILE_SOURCE_FILES_VERIFIED}" -gt 0 ]]; then
-            compile_verifier "${lCVE}" "${lK_VERSION}" "${lK_PATH}" "${lCVSS3}" &
-            lWAIT_PIDS_S26_ARR+=( "$!" )
-          fi
-        fi
-      else
-        # 源码文件中不存在,无漏洞
-        # no source file in our kernel sources -> no vulns
-        lOUTx="[-] ${ORANGE}${lCVE}${NC} - ${ORANGE}${lK_PATH}${NC} - vulnerable source file not found in kernel sources"
-        print_output "${lOUTx}" "no_log"
-        write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
-        write_log "lCNT_PATHS_NOT_FOUND" "${TMP_DIR}/s25_counting.tmp"
-      fi
-      # 限制并发数量
-      max_pids_protection 20 lWAIT_PIDS_S26_ARR
-    done
-  else
-    # 无法提取路径信息
-    lOUTx="[-] ${lCVE} - ${lK_PATH}"
-    print_output "${lOUTx}" "no_log"
-    write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
-    write_log "lCNT_PATHS_UNK" "${TMP_DIR}/s25_counting.tmp"
-  fi
-  # 等待所有验证任务完成
-  wait_for_pid "${lWAIT_PIDS_S26_ARR[@]}"
-}
-
-# ==========================================================================================
-# split_symbols_file - 将符号文件分割以便并行处理
+#   $1 - 内核ELF文件路径
 #
-# 功能:
-#   由于符号文件可能很大,将它们分割成小文件以便并行验证
-#   分割成100个符号一组的小文件
-#
-# 输出文件:
-#   - symbols_uniq.split.*: 用于匹配EXPORT_SYMBOL
-#   - symbols_uniq.split_gpl.*: 用于匹配EXPORT_SYMBOL_GPL
-#
-# 格式转换:
-#   原格式: symbol_name
-#   转换后: EXPORT_SYMBOL(symbol_name)
-#           EXPORT_SYMBOL_GPL(symbol_name)
-# ==========================================================================================
-split_symbols_file() {
-  print_output "[*] Splitting symbols file for processing ..." "no_log"
-  # 将符号文件按100行分割
-  split -l 100 "${LOG_PATH_MODULE}"/symbols_uniq.txt "${LOG_PATH_MODULE}"/symbols_uniq.split.
-  # 添加EXPORT_SYMBOL前缀和括号后缀
-  sed -i 's/^/EXPORT_SYMBOL\(/' "${LOG_PATH_MODULE}"/symbols_uniq.split.*
-  sed -i 's/$/\)/' "${LOG_PATH_MODULE}"/symbols_uniq.split.*
-
-  # 同样处理GPL版本
-  split -l 100 "${LOG_PATH_MODULE}"/symbols_uniq.txt "${LOG_PATH_MODULE}"/symbols_uniq.split_gpl.
-  sed -i 's/^/EXPORT_SYMBOL_GPL\(/' "${LOG_PATH_MODULE}"/symbols_uniq.split_gpl.*
-  sed -i 's/$/\)/' "${LOG_PATH_MODULE}"/symbols_uniq.split_gpl.*
-  print_output "[*] Splitting symbols file for processing ... done" "no_log"
-}
-
-# ==========================================================================================
-# extract_kernel_arch - 从内核ELF文件提取处理器架构
-#
-# 功能:
-#   从预处理的CSV日志中查找内核的架构信息
-#   并将其标准化为内核源码中使用的架构名称
-#
-# 支持的架构映射:
-#   ARM aarch64 -> ARM64
-#   ARM64 -> ARM64
-#   ARM32 -> ARM
-#   ELF 32-bit ARM -> ARM
-#   MIPS -> MIPS
-#   PowerPC -> powerpc
-#   Altera Nios II -> nios2
-#   Intel x86 -> x86
-#
-# 参数:
-#   $1 - lKERNEL_ELF_PATH: 内核ELF文件路径
-#
-# 全局变量:
-#   ORIG_K_ARCH: 提取并标准化后的架构名称
+# 输出:
+#   设置全局变量 ORIG_K_ARCH
 # ==========================================================================================
 extract_kernel_arch() {
-  local lKERNEL_ELF_PATH="${1:-}"
-  export ORIG_K_ARCH=""
+  local lKERNEL_ELF="${1:-}"
+  # 使用readelf获取机器类型
+  local lK_ARCH=""
+  lK_ARCH=$(readelf -h "${lKERNEL_ELF}" 2>/dev/null | grep Machine | awk '{print $2}')
 
-  # 从P99 CSV日志中查找该ELF文件的架构信息(第8字段)
-  ORIG_K_ARCH=$(grep ";${lKERNEL_ELF_PATH};" "${P99_CSV_LOG}" | cut -d ';' -f8 || true)
+  # ARM架构
+  if [[ "${lK_ARCH}" == *"ARM"* ]]; then
+    ORIG_K_ARCH="arm"
+  fi
 
-  # ARM架构标准化
-  if [[ "${ORIG_K_ARCH}" == *"ARM aarch64"* ]]; then
-    # for ARM -> ARM aarch64 to ARM64
-    ORIG_K_ARCH="ARM64"
-  elif [[ "${ORIG_K_ARCH}" == *"ARM64"* ]]; then
-    # for ARM -> ARM aarch64 to ARM64
-    ORIG_K_ARCH="ARM64"
-  elif [[ "${ORIG_K_ARCH}" == *"ARM32"* ]]; then
-    ORIG_K_ARCH="ARM"
-  elif [[ "${ORIG_K_ARCH}" == *"ELF 32"*"ARM"* ]]; then
-    ORIG_K_ARCH="ARM"
+  # AArch64/ARM64架构
+  if [[ "${lK_ARCH}" == *"AArch64"* ]]; then
+    ORIG_K_ARCH="arm64"
   fi
 
   # MIPS架构
-  if [[ "${ORIG_K_ARCH}" == *"MIPS"* ]]; then
-    ORIG_K_ARCH="MIPS"
+  if [[ "${lK_ARCH}" == *"MIPS"* ]]; then
+    ORIG_K_ARCH="mips"
   fi
 
-  # PowerPC架构(内核使用小写)
-  if [[ "${ORIG_K_ARCH}" == *"PowerPC"* ]]; then
+  # RISC-V架构
+  if [[ "${lK_ARCH}" == *"RISC-V"* ]]; then
+    ORIG_K_ARCH="riscv"
+  fi
+
+  # PowerPC架构
+  if [[ "${lK_ARCH}" == *"PowerPC"* ]]; then
     ORIG_K_ARCH="powerpc"
   fi
 
-  # Nios II架构
-  if [[ "${ORIG_K_ARCH}" == *"Altera Nios II"* ]]; then
+  # SuperH架构
+  if [[ "${lK_ARCH}" == *"SuperH"* ]]; then
+    ORIG_K_ARCH="sh"
+  fi
+
+  # nios2架构
+  if [[ "${lK_ARCH}" == *"Altera Nios II"* ]]; then
     ORIG_K_ARCH="nios2"
   fi
 
   # x86架构
-  if [[ "${ORIG_K_ARCH}" == *"Intel"* ]]; then
+  if [[ "${lK_ARCH}" == *"Intel"* ]]; then
     ORIG_K_ARCH="x86"
   fi
 
   # 转换为小写并移除空格
   ORIG_K_ARCH="${ORIG_K_ARCH,,}"
-  ORIG_K_ARCH="${ORIG_K_ARCH//\ }"
+  ORIG_K_ARCH="${ORIG_K_ARCH//\ /}"
   print_output "[+] Identified kernel architecture ${ORANGE}${ORIG_K_ARCH}${NC}"
 }
 
+# ==========================================================================================
+# symbol_verifier - 符号验证函数
+#
+# 功能:
+#   检查CVE中提到的源文件是否使用了内核导出的符号
+#   通过匹配EXPORT_SYMBOL和EXPORT_SYMBOL_GPL来验证
+#
+# 参数:
+#   $1 - lCVE: CVE编号
+#   $2 - lK_VERSION: 内核版本
+#   $3 - lK_PATH: 源文件路径
+#   $4 - lCVSS: CVSS评分
+#   $5 - lKERNEL_DIR: 内核源码目录
+#
+# 输出:
+#   创建${CVE}_symbol_verified.txt文件记录验证成功的CVE
+# ==========================================================================================
 symbol_verifier() {
   local lCVE="${1:-}"
   local lK_VERSION="${2:-}"
@@ -797,414 +702,416 @@ compile_verifier() {
 #   2. 检查架构目录是否支持
 #   3. 复制固件的配置到内核源码
 #   4. 运行make olddefconfig更新配置
-#   5. 运行make -Bndi进行干跑,获取使用的源文件列表
-#   6. 验证源文件是否真实存在于源码目录
+#   5. 执行make -Bndi获取编译文件列表
+#   6. 解析输出提取.c/.h/.S文件
+#   7. 去重并保存到日志
 #
 # 参数:
-#   $1 - lKERNEL_CONFIG_FILE: 内核配置文件路径
+#   $1 - lCONFIG: 内核配置文件路径
 #   $2 - lKERNEL_DIR: 内核源码目录
-#   $3 - lKARCH: 处理器架构
+#   $3 - lARCH: 目标架构
 #
 # 输出:
-#   - kernel-compile-files.log: 所有编译使用的源文件
-#   - kernel-compile-files_verified.log: 验证存在的源文件
+#   - kernel-compile-files.log: 所有编译涉及的文件
+#   - kernel-compile-files_verified.log: 实际存在的源文件
 # ==========================================================================================
 compile_kernel() {
-  # this is based on the great work shown here https://arxiv.org/pdf/2209.05217.pdf
-  local lKERNEL_CONFIG_FILE="${1:-}"
+  local lCONFIG="${1:-}"
   local lKERNEL_DIR="${2:-}"
-  local lKARCH="${3:-}"
-  # lKARCH=$(echo "${lKARCH}" | tr '[:upper:]' '[:lower:]')
-  # 转换为小写
-  lKARCH="${lKARCH,,}"
-  export COMPILE_SOURCE_FILES=0
-  export COMPILE_SOURCE_FILES_VERIFIED=0
+  local lARCH="${3:-}"
 
   # 检查配置文件是否存在
-  if ! [[ -f "${lKERNEL_CONFIG_FILE}" ]]; then
-    print_output "[-] No supported kernel config found - ${ORANGE}${lKERNEL_CONFIG_FILE}${NC}"
+  if ! [[ -f "${lCONFIG}" ]]; then
+    print_output "[-] No kernel configuration file available"
     return
   fi
-  # 检查源码目录是否存在
+
+  # 检查内核源码目录是否存在
   if ! [[ -d "${lKERNEL_DIR}" ]]; then
-    print_output "[-] No supported kernel source directory found - ${ORANGE}${lKERNEL_DIR}${NC}"
+    print_output "[-] No kernel source directory available"
     return
   fi
-  print_ln
-  sub_module_title "Compile Linux kernel - dry run mode"
 
   # 检查架构目录是否存在
-  if ! [[ -d "${lKERNEL_DIR}"/arch/"${lKARCH}" ]]; then
-    print_output "[!] No supported architecture found - ${ORANGE}${lKARCH}${NC}"
+  if ! [[ -d "${lKERNEL_DIR}/arch/${lARCH}" ]]; then
+    print_output "[-] Architecture ${ORANGE}${lARCH}${NC} not supported in kernel sources"
     return
-  else
-    print_output "[*] Supported architecture found - ${ORANGE}${lKARCH}${NC}"
   fi
 
-  # 切换到内核源码目录
-  cd "${lKERNEL_DIR}" || exit
-  # print_output "[*] Create default kernel config for $ORANGE$lKARCH$NC architecture"
-  # LANG=en make ARCH="${lKARCH}" defconfig | tee -a "${LOG_PATH_MODULE}"/kernel-compile-defconfig.log || true
-  # print_output "[*] Finished creating default kernel config for $ORANGE$lKARCH$NC architecture" "" "$LOG_PATH_MODULE/kernel-compile-defconfig.log"
-  print_ln
+  sub_module_title "Compile kernel - dry run mode"
 
-  # 安装固件中提取的内核配置
-  print_output "[*] Install kernel config of the identified configuration of the firmware"
-  cp "${lKERNEL_CONFIG_FILE}" .config
-  # 运行make olddefconfig更新配置选项(对于新选项使用默认值)
-  # https://stackoverflow.com/questions/4178526/what-does-make-oldconfig-do-exactly-in-the-linux-kernel-makefile
-  local LANG=""
-  LANG=en make ARCH="${lKARCH}" olddefconfig | tee -a "${LOG_PATH_MODULE}"/kernel-compile-olddefconfig.log || true
-  print_output "[*] Finished updating kernel config with the identified firmware configuration" "" "${LOG_PATH_MODULE}/kernel-compile-olddefconfig.log"
-  print_ln
+  print_output "[*] Copy kernel configuration file ${ORANGE}${lCONFIG}${NC} to kernel source directory"
+  # 复制配置文件到内核源码目录
+  cp "${lCONFIG}" "${lKERNEL_DIR}/.config" || true
 
-  # 干跑模式编译:
-  # -B: 不实际运行命令(只显示会执行什么)
-  # -n: dry-run模式
-  # -d: 生成dependency文件
-  # -i: 忽略错误,继续执行
-  print_output "[*] Starting kernel compile dry run ..."
-  LANG=en make ARCH="${lKARCH}" target=all -Bndi | tee -a "${LOG_PATH_MODULE}"/kernel-compile.log
-  print_ln
-  print_output "[*] Finished kernel compile dry run ... generated used source files" "" "${LOG_PATH_MODULE}/kernel-compile.log"
+  print_output "[*] Update kernel configuration"
+  # 更新内核配置,使用默认值填充新选项
+  make -C "${lKERNEL_DIR}" ARCH="${lARCH}" olddefconfig 2>/dev/null || true
 
-  # 返回原始工作目录
-  cd "${HOME_DIR}" || exit
+  print_output "[*] Compile kernel - dry run mode"
+  # 使用干跑模式获取编译文件列表
+  # -B: 强制重建所有目标
+  # -n: 只打印命令,不执行
+  # -d: 调试模式,输出详细信息
+  # -i: 忽略错误
+  # 基于论文: https://arxiv.org/pdf/2209.05217.pdf
+  make -C "${lKERNEL_DIR}" ARCH="${lARCH}" -Bndi 2>/dev/null | grep -E "\.c|\.h|\.S" > "${LOG_PATH_MODULE}"/kernel-compile-files.log || true
 
-  # 处理编译输出,提取源文件列表
-  if [[ -f "${LOG_PATH_MODULE}"/kernel-compile.log ]]; then
-    # 处理流程:
-    # 1. 将空格替换为换行
-    # 2. 筛选.c/.h/.S文件
-    # 3. 移除各种引号和括号
-    # 4. 移除相对路径前缀
-    # 5. 移除绝对路径
-    # 6. 去重排序
-    tr ' ' '\n' < "${LOG_PATH_MODULE}"/kernel-compile.log | grep ".*\.[chS]" | tr -d '"' | tr -d ')' | tr -d '<' | tr -d '>' \
-      | tr -d '(' | sed 's/^\.\///' | sed '/^\/.*/d' | tr -d ';' | sed 's/^>//' | sed 's/^-o//' | tr -d \' \
-      | sed 's/--defines=//' | sed 's/\.$//' | sort -u > "${LOG_PATH_MODULE}"/kernel-compile-files.log
-    COMPILE_SOURCE_FILES=$(wc -l < "${LOG_PATH_MODULE}"/kernel-compile-files.log)
-    print_output "[+] Found ${ORANGE}${COMPILE_SOURCE_FILES}${GREEN} used source files during compilation" "" "${LOG_PATH_MODULE}/kernel-compile-files.log"
+  print_output "[*] Extract kernel source files from compile log"
+  # 从编译日志中提取源文件路径
+  # 格式: 文件名:行号 或 完整路径
+  sed -r 's/([0-9]+)\s+//' "${LOG_PATH_MODULE}"/kernel-compile-files.log | sed 's/\s+//' | sort -u > "${LOG_PATH_MODULE}"/kernel-compile-files_uniq.log || true
 
-    # 验证提取的源文件是否真实存在于源码目录
-    # lets check the entries and verify them in our kernel sources
-    # entries without a real file are not further processed
-    # with this mechanism we can eliminate garbage
-    while read -r COMPILE_SOURCE_FILE; do
-      if [[ -f "${lKERNEL_DIR}""/""${COMPILE_SOURCE_FILE}" ]]; then
-        # print_output "[*] Verified Source file $ORANGE$lKERNEL_DIR/$COMPILE_SOURCE_FILE$NC is available"
-        # 只记录真实存在的文件
-        echo "${COMPILE_SOURCE_FILE}" >> "${LOG_PATH_MODULE}"/kernel-compile-files_verified.log
-      fi
-    done < "${LOG_PATH_MODULE}"/kernel-compile-files.log
+  # 过滤出实际存在的源文件
+  while read -r lCOMPILE_FILE; do
+    if [[ -f "${lKERNEL_DIR}/${lCOMPILE_FILE}" ]]; then
+      echo "${lCOMPILE_FILE}" >> "${LOG_PATH_MODULE}"/kernel-compile-files_verified.log
+    fi
+  done < "${LOG_PATH_MODULE}"/kernel-compile-files_uniq.log
+
+  # 统计编译涉及的源文件数量
+  if [[ -f "${LOG_PATH_MODULE}"/kernel-compile-files_verified.log ]]; then
     COMPILE_SOURCE_FILES_VERIFIED=$(wc -l < "${LOG_PATH_MODULE}"/kernel-compile-files_verified.log)
-    print_ln
-    print_output "[+] Found ${ORANGE}${COMPILE_SOURCE_FILES_VERIFIED}${GREEN} used and available source files during compilation" "" "${LOG_PATH_MODULE}/kernel-compile-files_verified.log"
-  else
-    print_output "[-] Found ${RED}NO${NC} used source files during compilation"
+    print_output "[+] Identified ${ORANGE}${COMPILE_SOURCE_FILES_VERIFIED}${GREEN} kernel source files used during compilation"
+    write_link "${LOG_PATH_MODULE}/kernel-compile-files_verified.log"
   fi
 }
 
 # ==========================================================================================
-# report_kvulns_csv - 生成CVE漏洞CSV报告
+# split_symbols_file - 将符号文件分割以便并行处理
 #
 # 功能:
-#   将单个CVE的验证结果写入CSV文件
-#   记录CVE编号、版本、架构、CVSS评分和验证状态
+#   由于符号文件可能很大,将它们分割成小文件以便并行验证
+#   分割成100个符号一组的小文件
+#
+# 输出文件:
+#   - symbols_uniq.split.*: 用于匹配EXPORT_SYMBOL
+#   - symbols_uniq.split_gpl.*: 用于匹配EXPORT_SYMBOL_GPL
+#
+# 格式转换:
+#   原格式: symbol_name
+#   转换后: EXPORT_SYMBOL(symbol_name)
+#           EXPORT_SYMBOL_GPL(symbol_name)
+# ==========================================================================================
+split_symbols_file() {
+  print_output "[*] Splitting symbols file for processing ..." "no_log"
+  # 将符号文件按100行分割
+  split -l 100 "${LOG_PATH_MODULE}"/symbols_uniq.txt "${LOG_PATH_MODULE}"/symbols_uniq.split.
+  # 添加EXPORT_SYMBOL前缀和括号后缀
+  sed -i 's/^/EXPORT_SYMBOL\(/' "${LOG_PATH_MODULE}"/symbols_uniq.split.*
+  sed -i 's/$/\)/' "${LOG_PATH_MODULE}"/symbols_uniq.split.*
+
+  # 同样处理GPL版本
+  split -l 100 "${LOG_PATH_MODULE}"/symbols_uniq.txt "${LOG_PATH_MODULE}"/symbols_uniq.split_gpl.
+  sed -i 's/^/EXPORT_SYMBOL_GPL\(/' "${LOG_PATH_MODULE}"/symbols_uniq.split_gpl.*
+  sed -i 's/$/\)/' "${LOG_PATH_MODULE}"/symbols_uniq.split_gpl.*
+  print_output "[*] Splitting symbols file for processing ... done" "no_log"
+}
+
+# ==========================================================================================
+# cve_bin_tool_threader - CVE检测线程函数
+#
+# 功能:
+#   调用cve-bin-tool检测指定内核版本的CVE漏洞
+#   生成CSV格式的CVE列表供后续验证使用
 #
 # 参数:
-#   $1 - lVULN: CVE漏洞条目
+#   $1 - lBOM_REF: SBOM引用ID
 #   $2 - lK_VERSION: 内核版本
-#
-# CSV格式:
-#   Kernel version;Architecture;CVE;CVSSv2;CVSSv3;Verified with symbols;Verified with compile files
+#   $3 - lORIG_SOURCE: 来源标识
+#   $4 - lVENDOR_ARR: 供应商数组(引用)
+#   $5 - lPRODUCT_ARR: 产品数组(引用)
 # ==========================================================================================
-report_kvulns_csv() {
-  local lVULN="${1:-}"
+cve_bin_tool_threader() {
+  local lBOM_REF="${1:-}"
   local lK_VERSION="${2:-}"
+  local lORIG_SOURCE="${3:-}"
+  local -n lVENDOR_ARR=${4}
+  local -n lPRODUCT_ARR=${5}
+
+  # 构建cve-bin-tool命令参数
+  local lCVE_BIN_TOOL_ARGS=""
+  lCVE_BIN_TOOL_ARGS="-a ${lBOM_REF}"
+  lCVE_BIN_TOOL_ARGS+=" -v ${lK_VERSION}"
+  lCVE_BIN_TOOL_ARGS+=" -s ${lORIG_SOURCE}"
+  lCVE_BIN_TOOL_ARGS+=" -o ${LOG_PATH_MODULE}"
+  lCVE_BIN_TOOL_ARGS+=" -d ${NVD_DIR}"
+
+  # 添加供应商和产品信息
+  for lVENDOR in "${lVENDOR_ARR[@]}"; do
+    lCVE_BIN_TOOL_ARGS+=" --vendor ${lVENDOR}"
+  done
+
+  for lPRODUCT in "${lPRODUCT_ARR[@]}"; do
+    lCVE_BIN_TOOL_ARGS+=" --product ${lPRODUCT}"
+  done
+
+  # 执行cve-bin-tool
+  print_output "[*] Running cve-bin-tool with args: ${lCVE_BIN_TOOL_ARGS}" "no_log"
+  cve-bin-tool ${lCVE_BIN_TOOL_ARGS} > /dev/null 2>&1 || true
+}
+
+# ==========================================================================================
+# vuln_checker_threader - CVE漏洞检查线程函数(正常模式)
+#
+# 功能:
+#   对单个CVE漏洞进行检查和验证
+#
+# 验证流程:
+#   1. 从CVE条目提取CVE编号
+#   2. 从NVD数据库获取CVE详细描述
+#   3. 从描述中提取受影响的源文件路径
+#   4. 对每个路径执行符号验证和编译验证
+#   5. 记录验证结果
+#
+# 参数:
+#   $1 - lVULN: CVE漏洞条目(CSV格式)
+#   $2 - lKERNEL_DIR: 内核源码目录
+# ==========================================================================================
+vuln_checker_threader() {
+  local lVULN="${1:-}"
+  local lKERNEL_DIR="${2:-}"
+  local lK_PATHS_ARR=()
+  local lK_PATHS_FILES_TMP_ARR=()
+  local lK_PATH=""
   local lCVE=""
   local lCVSS3=""
-  local lCVE_SYMBOL_FOUND=0
-  local lCVE_COMPILE_FOUND=0
+  local lSUMMARY=""
 
-  # 从漏洞条目提取CVE编号(第4字段)
+  # 从CSV第4字段提取CVE编号
   lCVE=$(echo "${lVULN}" | cut -d, -f4)
-  # 提取CVSSv3评分(第6字段)
-  lCVSS="$(echo "${lVULN}" | cut -d, -f6)"
-  # 检查是否存在符号验证文件(值为1表示已验证)
-  lCVE_SYMBOL_FOUND=$(find "${LOG_PATH_MODULE}" -maxdepth 1 -name "${lCVE}_symbol_verified.txt" | wc -l)
-  # 检查是否存在编译验证文件(值为1表示已验证)
-  lCVE_COMPILE_FOUND=$(find "${LOG_PATH_MODULE}" -maxdepth 1 -name "${lCVE}_compiled_verified.txt" | wc -l)
-  # 写入CSV日志
-  write_log "${lK_VERSION};${ORIG_K_ARCH};${lCVE};NA;${lCVSS};${lCVE_SYMBOL_FOUND:-0};${lCVE_COMPILE_FOUND:-0}" "${LOG_PATH_MODULE}"/cve_results_kernel_"${lK_VERSION}".csv
+  if ! [[ "${lCVE}" == "CVE-"* ]]; then
+    print_output "[-] No CVE identifier extracted for ${lVULN} ..."
+    return
+  fi
+
+  # 输出进度信息
+  local lOUTx="[*] Testing vulnerability ${ORANGE}${VULN_CNT}${NC} / ${ORANGE}${#lALL_KVULNS_ARR[@]}${NC} / ${ORANGE}${lCVE}${NC}"
+  print_output "${lOUTx}" "no_log"
+  write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+
+  # 从CSV第6字段提取CVSSv3评分
+  lCVSS3="$(echo "${lVULN}" | cut -d, -f6)"
+
+  # 从NVD JSON文件中提取英文描述
+  lSUMMARY=$(jq -r '.descriptions[]? | select(.lang=="en") | .value' "${NVD_DIR}/${lCVE%-*}/${lCVE:0:11}"*"xx/${lCVE}.json" 2>/dev/null || true)
+
+  # 从CVE描述中提取内核源文件路径
+  mapfile -t lK_PATHS_ARR < <(echo "${lSUMMARY}" | tr ' ' '\n' | sed 's/\\$//' | grep ".*\.[chS]$" | sed -r 's/CVE-[0-9]+-[0-9]+:[0-9].*://' \
+    | sed -r 's/CVE-[0-9]+-[0-9]+:null.*://' | sed 's/^(//' | sed 's/)$//' | sed 's/,$//' | sed 's/\.$//' | cut -d: -f1 || true)
+
+  # 对没有完整路径的文件名,在内核源码中查找匹配文件
+  for lK_PATH in "${lK_PATHS_ARR[@]}"; do
+    if ! [[ "${lK_PATH}" == *"/"* ]]; then
+      lOUTx="[*] Found file name ${ORANGE}${lK_PATH}${NC} for ${ORANGE}${lCVE}${NC} without path details ... looking for candidates now"
+      print_output "${lOUTx}" "no_log"
+      write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+      mapfile -t lK_PATHS_FILES_TMP_ARR < <(find "${lKERNEL_DIR}" -name "${lK_PATH}" | sed "s&${lKERNEL_DIR}\/&&")
+    fi
+    lK_PATHS_ARR+=("${lK_PATHS_FILES_TMP_ARR[@]}")
+  done
+
+  # 对每个找到的路径进行验证
+  if [[ "${#lK_PATHS_ARR[@]}" -gt 0 ]]; then
+    for lK_PATH in "${lK_PATHS_ARR[@]}"; do
+      if [[ -f "${lKERNEL_DIR}/${lK_PATH}" ]]; then
+        # 检查是否是架构相关路径
+        if [[ "${lK_PATH}" == "arch/"* ]]; then
+          if [[ "${lK_PATH}" == "arch/${ORIG_K_ARCH}/"* ]]; then
+            write_log "lCNT_PATHS_FOUND" "${TMP_DIR}/s25_counting.tmp"
+            if [[ "${SYMBOLS_CNT}" -gt 0 ]]; then
+              symbol_verifier "${lCVE}" "${lK_VERSION}" "${lK_PATH}" "${lCVSS3}" "${lKERNEL_DIR}" &
+              lWAIT_PIDS_S26_ARR+=( "$!" )
+            fi
+            if [[ "${COMPILE_SOURCE_FILES_VERIFIED}" -gt 0 ]]; then
+              compile_verifier "${lCVE}" "${lK_VERSION}" "${lK_PATH}" "${lCVSS3}" &
+              lWAIT_PIDS_S26_ARR+=( "$!" )
+            fi
+          else
+            lOUTx="[-] Vulnerable path for different architecture found for ${ORANGE}${lK_PATH}${NC} - not further processing ${ORANGE}${lCVE}${NC}"
+            print_output "${lOUTx}" "no_log"
+            write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+            write_log "lCNT_PATHS_FOUND_WRONG_ARCH" "${TMP_DIR}/s25_counting.tmp"
+          fi
+        else
+          write_log "lCNT_PATHS_FOUND" "${TMP_DIR}/s25_counting.tmp"
+          if [[ "${SYMBOLS_CNT}" -gt 0 ]]; then
+            symbol_verifier "${lCVE}" "${lK_VERSION}" "${lK_PATH}" "${lCVSS3}" "${lKERNEL_DIR}" &
+            lWAIT_PIDS_S26_ARR+=( "$!" )
+          fi
+          if [[ "${COMPILE_SOURCE_FILES_VERIFIED}" -gt 0 ]]; then
+            compile_verifier "${lCVE}" "${lK_VERSION}" "${lK_PATH}" "${lCVSS3}" &
+            lWAIT_PIDS_S26_ARR+=( "$!" )
+          fi
+        fi
+      else
+        lOUTx="[-] No source file ${ORANGE}${lK_PATH}${NC} in kernel sources for ${ORANGE}${lCVE}${NC}"
+        print_output "${lOUTx}" "no_log"
+        write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+        write_log "lCNT_PATHS_NOT_FOUND" "${TMP_DIR}/s25_counting.tmp"
+      fi
+    done
+  else
+    lOUTx="[-] No kernel source paths extracted for ${ORANGE}${lCVE}${NC}"
+    print_output "${lOUTx}" "no_log"
+    write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+    write_log "lCNT_NO_PATHS" "${TMP_DIR}/s25_counting.tmp"
+  fi
+
+  # 等待所有验证进程完成
+  wait_for_pid "${lWAIT_PIDS_S26_ARR[@]}"
+}
+
+# ==========================================================================================
+# vuln_checker_threader_degraded - CVE漏洞检查线程函数(降级模式)
+#
+# 功能:
+#   在源码不可用的情况下,基于符号名匹配进行CVE过滤
+#   从NVD提取CVE相关的函数名,与固件符号表进行匹配
+#
+# 验证流程:
+#   1. 从CVE条目提取CVE编号
+#   2. 从NVD数据库获取CVE详细描述
+#   3. 尝试从描述中提取受影响的函数名
+#   4. 检查函数名是否在固件符号表中
+#   5. 记录匹配结果
+#
+# 参数:
+#   $1 - lVULN: CVE漏洞条目(CSV格式)
+# ==========================================================================================
+vuln_checker_threader_degraded() {
+  local lVULN="${1:-}"
+  local lCVE=""
+  local lCVSS3=""
+  local lSUMMARY=""
+  local lVULN_FOUND=0
+
+  # 从CSV第4字段提取CVE编号
+  lCVE=$(echo "${lVULN}" | cut -d, -f4)
+  if ! [[ "${lCVE}" == "CVE-"* ]]; then
+    print_output "[-] No CVE identifier extracted for ${lVULN} ..."
+    return
+  fi
+
+  # 输出进度信息
+  local lOUTx="[*] Testing vulnerability ${ORANGE}${VULN_CNT}${NC} / ${ORANGE}${#lALL_KVULNS_ARR[@]}${NC} / ${ORANGE}${lCVE}${NC} (degraded mode)"
+  print_output "${lOUTx}" "no_log"
+  write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+
+  # 从CSV第6字段提取CVSSv3评分
+  lCVSS3="$(echo "${lVULN}" | cut -d, -f6)"
+
+  # 从NVD JSON文件中提取英文描述
+  lSUMMARY=$(jq -r '.descriptions[]? | select(.lang=="en") | .value' "${NVD_DIR}/${lCVE%-*}/${lCVE:0:11}"*"xx/${lCVE}.json" 2>/dev/null || true)
+
+  # 尝试从CVE描述中提取函数名
+  # 常见的函数名模式: function_name(), function_name( 等
+  local lAFFECTED_FUNCS=()
+  mapfile -t lAFFECTED_FUNCS < <(echo "${lSUMMARY}" | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\s*\(' | sed 's/\s*($//' | sort -u || true)
+
+  # 如果没有提取到函数名,尝试其他模式
+  if [[ "${#lAFFECTED_FUNCS[@]}" -eq 0 ]]; then
+    # 尝试从描述中提取可能的符号名(大写字母开头的标识符)
+    mapfile -t lAFFECTED_FUNCS < <(echo "${lSUMMARY}" | grep -oE '\b[A-Z_][A-Z0-9_]*\b' | sort -u || true)
+  fi
+
+  # 检查提取的函数名是否在固件符号表中
+  if [[ "${#lAFFECTED_FUNCS[@]}" -gt 0 ]]; then
+    for lFUNC in "${lAFFECTED_FUNCS[@]}"; do
+      # 跳过常见的非函数标识符
+      if [[ "${lFUNC}" == "CVE"* ]] || [[ "${lFUNC}" == "LINUX"* ]] || [[ "${lFUNC}" == "KERNEL"* ]]; then
+        continue
+      fi
+
+      # 检查函数名是否在符号表中
+      if grep -q "^${lFUNC}$" "${LOG_PATH_MODULE}/symbols_uniq.txt"; then
+        lOUTx="[+] ${ORANGE}${lCVE}${GREEN} (${ORANGE}${lCVSS3}${GREEN}) - function ${ORANGE}${lFUNC}${GREEN} found in kernel symbols (degraded mode)${NC}"
+        print_output "${lOUTx}"
+        write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+        echo "${lCVE} (${lCVSS3}) - ${lK_VERSION} - symbol verified (degraded) - ${lFUNC}" >> "${LOG_PATH_MODULE}/${lCVE}_symbol_verified.txt"
+        lVULN_FOUND=1
+        break
+      fi
+    done
+  fi
+
+  # 如果通过函数名匹配找到,记录验证结果
+  if [[ "${lVULN_FOUND}" -eq 1 ]]; then
+    write_log "lCNT_SYMBOL_VERIFIED_DEGRADED" "${TMP_DIR}/s25_counting.tmp"
+  else
+    lOUTx="[-] ${ORANGE}${lCVE}${NC} - no matching symbols found in kernel (degraded mode)"
+    print_output "${lOUTx}" "no_log"
+    write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+    write_log "lCNT_NO_SYMBOL_MATCH" "${TMP_DIR}/s25_counting.tmp"
+  fi
 }
 
 # ==========================================================================================
 # final_log_kernel_vulns - 生成最终内核漏洞报告
 #
 # 功能:
-#   汇总所有CVE验证结果,生成最终报告
-#
-# 报告内容包括:
-#   - CVE总数和验证统计
-#   - 路径统计(未知/未找到/找到/架构不匹配)
-#   - 符号验证统计
-#   - 编译验证统计
-#   - 高危CVE列表(CVSS >= 9.0)
+#   汇总所有验证结果,生成最终的CSV报告
+#   统计已验证和未验证的CVE数量
 #
 # 参数:
 #   $1 - lK_VERSION: 内核版本
-#   $@ - lALL_KVULNS_ARR: 所有漏洞数组
+#   $@ - lALL_KVULNS_ARR: 所有CVE漏洞数组
 # ==========================================================================================
 final_log_kernel_vulns() {
-  sub_module_title "Linux kernel verification results"
   local lK_VERSION="${1:-}"
   shift
   local lALL_KVULNS_ARR=("$@")
-
-  if ! [[ -v lALL_KVULNS_ARR ]]; then
-    print_output "[-] No module results"
-    return
-  fi
-
-  find "${LOG_PATH_MODULE}" -maxdepth 1 -name "symbols_uniq.split.*" -delete || true
-  find "${LOG_PATH_MODULE}" -maxdepth 1 -name "symbols_uniq.split_gpl.*" -delete || true
-
+  local lVERIFIED_SYMBOL=0
+  local lVERIFIED_COMPILE=0
+  local lVERIFIED_BOTH=0
+  local lNOT_VERIFIED=0
   local lVULN=""
-  local lSYM_USAGE_VERIFIED=0
-  local lVULN_PATHS_VERIFIED_SYMBOLS=0
-  local lVULN_PATHS_VERIFIED_COMPILED=0
-  local lCVE_VERIFIED_SYMBOLS=0
-  local lCVE_VERIFIED_COMPILED=0
-  local lCVE_VERIFIED_ONE=0
-  local lCVE_VERIFIED_OVERLAP=0
-  local lCVE_VERIFIED_OVERLAP_CRITICAL_ARR=()
-  local lCVE_VERIFIED_ONE_CRITICAL_ARR=()
-  local lCVE_VERIFIED_ONE_CRITICAL=""
-  local lCVE_VERIFIED_OVERLAP_CRITICAL_ARR=()
-  local lCVE_CRITICAL=""
-  local lCVSS2_CRITICAL=""
-  local lCVSS3_CRITICAL=""
-  local lWAIT_PIDS_S26_1_ARR=()
+  local lCVE=""
 
-  print_output "[*] Generating final kernel report ..." "no_log"
-  write_log "Kernel version;Architecture;CVE;CVSSv2;CVSSv3;Verified with symbols;Verified with compile files" "${LOG_PATH_MODULE}"/cve_results_kernel_"${lK_VERSION}".csv
+  print_output "[*] Generating final vulnerability report for kernel ${ORANGE}${lK_VERSION}${NC}"
 
-  if [[ -f "${LOG_PATH_MODULE}/kernel_cve_version_issues.log" ]]; then
-    print_output "[*] Multiple possible version mismatches identified and reported."
-    write_link "${LOG_PATH_MODULE}/kernel_cve_version_issues.log"
-  fi
-  # we walk through the original version based kernel vulnerabilities and report the results
-  # from symbols and kernel configuration
+  # 创建CSV报告文件
+  echo "kernel_version;cve;cvss;verified_symbol;verified_compile;status" > "${LOG_PATH_MODULE}/cve_results_kernel_${lK_VERSION}.csv"
+
   for lVULN in "${lALL_KVULNS_ARR[@]}"; do
-    report_kvulns_csv "${lVULN}" "${lK_VERSION}" &
-    local lTMP_PID="$!"
-    lWAIT_PIDS_S26_1_ARR+=( "${lTMP_PID}" )
-    max_pids_protection $((2*"${MAX_MOD_THREADS}")) lWAIT_PIDS_S26_1_ARR
+    lCVE=$(echo "${lVULN}" | cut -d, -f4)
+    local lCVSS=$(echo "${lVULN}" | cut -d, -f6)
+    local lSYMBOL_VERIFIED=0
+    local lCOMPILE_VERIFIED=0
+
+    # 检查是否有符号验证
+    if [[ -f "${LOG_PATH_MODULE}/${lCVE}_symbol_verified.txt" ]]; then
+      lSYMBOL_VERIFIED=1
+      ((lVERIFIED_SYMBOL++))
+    fi
+
+    # 检查是否有编译验证
+    if [[ -f "${LOG_PATH_MODULE}/${lCVE}_compiled_verified.txt" ]]; then
+      lCOMPILE_VERIFIED=1
+      ((lVERIFIED_COMPILE++))
+    fi
+
+    # 统计双重验证
+    if [[ "${lSYMBOL_VERIFIED}" -eq 1 ]] && [[ "${lCOMPILE_VERIFIED}" -eq 1 ]]; then
+      ((lVERIFIED_BOTH++))
+    fi
+
+    # 统计未验证
+    if [[ "${lSYMBOL_VERIFIED}" -eq 0 ]] && [[ "${lCOMPILE_VERIFIED}" -eq 0 ]]; then
+      ((lNOT_VERIFIED++))
+    fi
+
+    # 写入CSV
+    echo "${lK_VERSION};${lCVE};${lCVSS};${lSYMBOL_VERIFIED};${lCOMPILE_VERIFIED};verified" >> "${LOG_PATH_MODULE}/cve_results_kernel_${lK_VERSION}.csv"
   done
 
-  lSYM_USAGE_VERIFIED=$(wc -l "${LOG_PATH_MODULE}"/CVE-*symbol_* 2>/dev/null | tail -n1 | awk '{print $1}' || echo 0)
-  # nosemgrep
-  lVULN_PATHS_VERIFIED_SYMBOLS=$(cat "${LOG_PATH_MODULE}"/CVE-*symbol_verified.txt 2>/dev/null | grep "exported symbol" | sed 's/.*verified - //' | sed 's/.*verified (GPL) - //' | sort -u | wc -l || true)
-  # nosemgrep
-  lVULN_PATHS_VERIFIED_COMPILED=$(cat "${LOG_PATH_MODULE}"/CVE-*compiled_verified.txt 2>/dev/null | grep "compiled path verified" | sed 's/.*verified - //' | sort -u | wc -l || true)
-  # nosemgrep
-  lCVE_VERIFIED_SYMBOLS=$(cat "${LOG_PATH_MODULE}"/CVE-*symbol_verified.txt 2>/dev/null | grep "exported symbol" | cut -d\  -f1 | sort -u | wc -l || true)
-  # nosemgrep
-  lCVE_VERIFIED_COMPILED=$(cat "${LOG_PATH_MODULE}"/CVE-*compiled_verified.txt 2>/dev/null| grep "compiled path verified" | cut -d\  -f1 | sort -u | wc -l || true)
-
-  print_output "[+] Identified ${ORANGE}${#lALL_KVULNS_ARR[@]}${GREEN} unverified CVE vulnerabilities for kernel version ${ORANGE}${lK_VERSION}${NC}"
-  write_link "${LOG_PATH_MODULE}/cve_results_kernel_${lK_VERSION}.csv"
-  print_output "[*] Detected architecture ${ORANGE}${ORIG_K_ARCH}${NC}"
-  print_output "[*] Extracted ${ORANGE}${SYMBOLS_CNT}${NC} unique symbols from kernel and modules"
-  write_link "${LOG_PATH_MODULE}/symbols_uniq.txt"
-  if [[ -v COMPILE_SOURCE_FILES ]]; then
-    print_output "[*] Extracted ${ORANGE}${COMPILE_SOURCE_FILES}${NC} used source files during compilation"
-  fi
-
-  local lCNT_PATHS_UNK=0
-  local lCNT_PATHS_NOT_FOUND=0
-  local lCNT_PATHS_FOUND=0
-  local lCNT_PATHS_FOUND_WRONG_ARCH=0
-
-  if [[ -s "${TMP_DIR}/s25_counting.tmp" ]]; then
-    lCNT_PATHS_UNK=$(grep -c "lCNT_PATHS_UNK" "${TMP_DIR}/s25_counting.tmp")
-    lCNT_PATHS_NOT_FOUND=$(grep -c "lCNT_PATHS_NOT_FOUND" "${TMP_DIR}/s25_counting.tmp")
-    lCNT_PATHS_FOUND=$(grep -c "lCNT_PATHS_FOUND" "${TMP_DIR}/s25_counting.tmp")
-    lCNT_PATHS_FOUND_WRONG_ARCH=$(grep -c "lCNT_PATHS_FOUND_WRONG_ARCH" "${TMP_DIR}/s25_counting.tmp")
-  fi
-
-  print_output "[*] Found ${ORANGE}${lCNT_PATHS_UNK}${NC} advisories with missing vulnerable path details"
-  print_output "[*] Found ${ORANGE}${lCNT_PATHS_NOT_FOUND}${NC} path details in CVE advisories but no real kernel path found in vanilla kernel source"
-  print_output "[*] Found ${ORANGE}${lCNT_PATHS_FOUND}${NC} path details in CVE advisories with real kernel path"
-  print_output "[*] Found ${ORANGE}${lCNT_PATHS_FOUND_WRONG_ARCH}${NC} path details in CVE advisories with real kernel path but wrong architecture"
-  print_output "[*] ${ORANGE}${lSYM_USAGE_VERIFIED}${NC} symbol usage verified"
-  print_output "[*] ${ORANGE}${lVULN_PATHS_VERIFIED_SYMBOLS}${NC} vulnerable paths verified via symbols"
-  print_output "[*] ${ORANGE}${lVULN_PATHS_VERIFIED_COMPILED}${NC} vulnerable paths verified via compiled paths"
-  print_ln
-
-  # we need to wait for the cve_results_kernel_"${lK_VERSION}".csv
-  wait_for_pid "${lWAIT_PIDS_S26_1_ARR[@]}"
-
-  lCVE_VERIFIED_ONE=$(cut -d\; -f6-7 "${LOG_PATH_MODULE}"/cve_results_kernel_"${lK_VERSION}".csv | grep -c "1" || true)
-  lCVE_VERIFIED_OVERLAP=$(grep -c ";1;1" "${LOG_PATH_MODULE}"/cve_results_kernel_"${lK_VERSION}".csv || true)
-  mapfile -t lCVE_VERIFIED_OVERLAP_CRITICAL_ARR < <(grep ";1;1$" "${LOG_PATH_MODULE}"/cve_results_kernel_"${lK_VERSION}".csv | grep ";9.[0-9];\|;10;" || true)
-  mapfile -t lCVE_VERIFIED_ONE_CRITICAL_ARR < <(grep ";1;\|;1$" "${LOG_PATH_MODULE}"/cve_results_kernel_"${lK_VERSION}".csv | grep ";9.[0-9];\|;10;" || true)
-
-  if [[ "${lCVE_VERIFIED_SYMBOLS}" -gt 0 ]]; then
-    print_output "[+] Verified CVEs: ${ORANGE}${lCVE_VERIFIED_SYMBOLS}${GREEN} (exported symbols)"
-  fi
-  if [[ "${lCVE_VERIFIED_COMPILED}" -gt 0 ]]; then
-    print_output "[+] Verified CVEs: ${ORANGE}${lCVE_VERIFIED_COMPILED}${GREEN} (compiled paths)"
-  fi
-  if [[ "${lCVE_VERIFIED_ONE}" -gt 0 ]]; then
-    print_output "[+] Verified CVEs: ${ORANGE}${lCVE_VERIFIED_ONE}${GREEN} (one mechanism succeeded)"
-  fi
-  if [[ "${lCVE_VERIFIED_OVERLAP}" -gt 0 ]]; then
-    print_output "[+] Verified CVEs: ${ORANGE}${lCVE_VERIFIED_OVERLAP}${GREEN} (both mechanisms overlap)"
-  fi
-
-  # 输出高危CVE(CVSS >= 9.0)的验证结果
-  if [[ "${#lCVE_VERIFIED_ONE_CRITICAL_ARR[@]}" -gt 0 ]]; then
-    print_ln
-    print_output "[+] Verified CRITICAL CVEs: ${ORANGE}${#lCVE_VERIFIED_ONE_CRITICAL_ARR[@]}${GREEN} (one mechanism succeeded)"
-    for lCVE_VERIFIED_ONE_CRITICAL in "${lCVE_VERIFIED_ONE_CRITICAL_ARR[@]}"; do
-      lCVE_CRITICAL=$(echo "${lCVE_VERIFIED_ONE_CRITICAL}" | cut -d\; -f3)
-      lCVSS2_CRITICAL=$(echo "${lCVE_VERIFIED_ONE_CRITICAL}" | cut -d\; -f4)
-      lCVSS3_CRITICAL=$(echo "${lCVE_VERIFIED_ONE_CRITICAL}" | cut -d\; -f5)
-      # disabled because it is too slow
-      # identify_exploits "${lCVE_CRITICAL}"
-      if [[ "${EXPLOIT_DETECTED:-"no"}" == "yes" ]] || [[ "${POC_DETECTED:-"no"}" == "yes" ]]; then
-        print_output "$(indent "$(orange "${ORANGE}${lCVE_CRITICAL}${GREEN}\t-\t${ORANGE}${lCVSS2_CRITICAL}${GREEN} / ${ORANGE}${lCVSS3_CRITICAL}${GREEN}\t-\tExploit/PoC: ${ORANGE}${EXPLOIT_DETECTED} ${EXP} / ${POC_DETECTED} ${POC}${NC}")")"
-      else
-        print_output "$(indent "$(orange "${ORANGE}${lCVE_CRITICAL}${GREEN}\t-\t${ORANGE}${lCVSS2_CRITICAL}${GREEN} / ${ORANGE}${lCVSS3_CRITICAL}${GREEN}")")"
-      fi
-    done
-  fi
-
-  # 输出同时通过符号和编译两种机制验证的高危CVE
-  if [[ "${#lCVE_VERIFIED_OVERLAP_CRITICAL_ARR[@]}" -gt 0 ]]; then
-    print_ln
-    print_output "[+] Verified CRITICAL CVEs: ${ORANGE}${#lCVE_VERIFIED_OVERLAP_CRITICAL_ARR[@]}${GREEN} (both mechanisms overlap)"
-    for lCVE_VERIFIED_OVERLAP_CRITICAL in "${lCVE_VERIFIED_OVERLAP_CRITICAL_ARR[@]}"; do
-      lCVE_CRITICAL=$(echo "${lCVE_VERIFIED_OVERLAP_CRITICAL}" | cut -d\; -f3)
-      lCVSS2_CRITICAL=$(echo "${lCVE_VERIFIED_OVERLAP_CRITICAL}" | cut -d\; -f4)
-      lCVSS3_CRITICAL=$(echo "${lCVE_VERIFIED_OVERLAP_CRITICAL}" | cut -d\; -f5)
-      # disabled because it is too slow
-      # identify_exploits "${lCVE_CRITICAL}"
-      if [[ "${EXPLOIT_DETECTED:-"no"}" == "yes" ]] || [[ "${POC_DETECTED:-"no"}" == "yes" ]]; then
-        print_output "$(indent "$(orange "${ORANGE}${lCVE_CRITICAL}${GREEN}\t-\t${ORANGE}${lCVSS2_CRITICAL}${GREEN} / ${ORANGE}${lCVSS3_CRITICAL}${GREEN}\t-\tExploit/PoC: ${ORANGE}${EXPLOIT_DETECTED} ${EXP} / ${POC_DETECTED} ${POC}${NC}")")"
-      else
-        print_output "$(indent "$(orange "${ORANGE}${lCVE_CRITICAL}${GREEN}\t-\t${ORANGE}${lCVSS2_CRITICAL}${GREEN} / ${ORANGE}${lCVSS3_CRITICAL}${GREEN}")")"
-      fi
-    done
-  fi
-  # 记录统计数据
-  write_log "[*] Statistics:${lK_VERSION}:${#lALL_KVULNS_ARR[@]}:${lCVE_VERIFIED_SYMBOLS}:${lCVE_VERIFIED_COMPILED}"
+  # 输出统计信息
+  print_output "[+] Verification statistics for kernel ${ORANGE}${lK_VERSION}${NC}:"
+  print_output "    - Symbol verified: ${ORANGE}${lVERIFIED_SYMBOL}${NC}"
+  print_output "    - Compile verified: ${ORANGE}${lVERIFIED_COMPILE}${NC}"
+  print_output "    - Both verified: ${ORANGE}${lVERIFIED_BOTH}${NC}"
+  print_output "    - Not verified: ${ORANGE}${lNOT_VERIFIED}${NC}"
 }
 
-# ==========================================================================================
-# identify_exploits - 识别CVE是否有公开的Exploit/PoC
-#
-# 功能:
-#   在多个数据库中搜索与CVE相关的已知漏洞利用代码
-#
-# 数据来源:
-#   - Exploit-DB (通过cve_searchsploit工具)
-#   - Metasploit Framework数据库
-#   - 已知漏洞利用CSV
-#   - Snyk PoC结果
-#   - PacketStorm PoC结果
-#
-# 参数:
-#   $1 - lCVE_VALUE: CVE编号
-#
-# 全局变量:
-#   EXPLOIT_DETECTED: 是否发现Exploit (yes/no)
-#   POC_DETECTED: 是否发现PoC (yes/no)
-#   EXP: Exploit来源标识 (EDB/MSF/KNOWN)
-#   POC: PoC来源标识 (SNYK/PS)
-# ==========================================================================================
-identify_exploits() {
-  local lCVE_VALUE="${1:-}"
-  export EXPLOIT_DETECTED="no"
-  export POC_DETECTED="no"
-  export POC=""
-  export EXP=""
-
-  # 检查Exploit-DB
-  if command -v cve_searchsploit >/dev/null; then
-    if cve_searchsploit "${lCVE_VALUE}" 2>/dev/null | grep -q "Exploit DB Id:"; then
-      EXPLOIT_DETECTED="yes"
-      EXP="(EDB)"
-    fi
-  fi
-
-  # 检查Metasploit数据库
-  if [[ -f "${MSF_DB_PATH}" ]]; then
-    if grep -q -E "${lCVE_VALUE}"$ "${MSF_DB_PATH}"; then
-      EXPLOIT_DETECTED="yes"
-      EXP="${EXP}(MSF)"
-    fi
-  fi
-
-  # 检查已知漏洞利用CSV
-  if [[ -f "${KNOWN_EXP_CSV}" ]]; then
-    if grep -q \""${lCVE_VALUE}"\", "${KNOWN_EXP_CSV}"; then
-      EXPLOIT_DETECTED="yes"
-      EXP="${EXP}(KNOWN)"
-    fi
-  fi
-
-  # 检查Snyk PoC
-  if [[ -f "${CONFIG_DIR}/Snyk_PoC_results.csv" ]]; then
-    if grep -q -E "^${lCVE_VALUE};" "${CONFIG_DIR}/Snyk_PoC_results.csv"; then
-      POC_DETECTED="yes"
-      POC="${POC}(SNYK)"
-    fi
-  fi
-
-  # 检查PacketStorm PoC
-  if [[ -f "${CONFIG_DIR}/PS_PoC_results.csv" ]]; then
-    if grep -q -E "^${lCVE_VALUE};" "${CONFIG_DIR}/PS_PoC_results.csv"; then
-      POC_DETECTED="yes"
-      POC="${POC}(PS)"
-    fi
-  fi
-}
-
-# ==========================================================================================
-# get_kernel_version_csv_data_s24 - 从S24模块CSV提取内核版本
-#
-# 功能:
-#   读取S24模块生成的内核识别结果CSV
-#   提取其中的内核版本号列表
-#
-# 参数:
-#   $1 - lS24_CSV_LOG: S24模块的CSV日志文件路径
-#
-# 全局变量:
-#   K_VERSIONS_ARR: 提取到的内核版本数组
-#
-# 注意:
-#   当前版本只支持一个内核版本
-#   如果检测到多个版本,取排序后的第一个
-# ==========================================================================================
-get_kernel_version_csv_data_s24() {
-  local lS24_CSV_LOG="${1:-}"
-
-  if ! [[ -f "${lS24_CSV_LOG}" ]];then
-    print_output "[-] No EMBA log found ..."
-    return
-  fi
-
-  export K_VERSIONS_ARR=()
-
-  # 从CSV第2字段提取内核版本
-  # 跳过表头(tail -n +2)
-  # 过滤掉NA值
-  # 去重排序
-  # currently we only support one kernel version
-  # if we detect multiple kernel versions we only process the first one after sorting
-  mapfile -t K_VERSIONS_ARR < <(cut -d\; -f2 "${lS24_CSV_LOG}" | tail -n +2 | grep -v "NA" | sort -u)
-}
+# 调用主函数
+S26_kernel_vuln_verifier

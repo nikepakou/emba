@@ -809,49 +809,6 @@ split_symbols_file() {
 }
 
 # ==========================================================================================
-# cve_bin_tool_threader - CVE检测线程函数
-#
-# 功能:
-#   调用cve-bin-tool检测指定内核版本的CVE漏洞
-#   生成CSV格式的CVE列表供后续验证使用
-#
-# 参数:
-#   $1 - lBOM_REF: SBOM引用ID
-#   $2 - lK_VERSION: 内核版本
-#   $3 - lORIG_SOURCE: 来源标识
-#   $4 - lVENDOR_ARR: 供应商数组(引用)
-#   $5 - lPRODUCT_ARR: 产品数组(引用)
-# ==========================================================================================
-cve_bin_tool_threader() {
-  local lBOM_REF="${1:-}"
-  local lK_VERSION="${2:-}"
-  local lORIG_SOURCE="${3:-}"
-  local -n lVENDOR_ARR=${4}
-  local -n lPRODUCT_ARR=${5}
-
-  # 构建cve-bin-tool命令参数
-  local lCVE_BIN_TOOL_ARGS=""
-  lCVE_BIN_TOOL_ARGS="-a ${lBOM_REF}"
-  lCVE_BIN_TOOL_ARGS+=" -v ${lK_VERSION}"
-  lCVE_BIN_TOOL_ARGS+=" -s ${lORIG_SOURCE}"
-  lCVE_BIN_TOOL_ARGS+=" -o ${LOG_PATH_MODULE}"
-  lCVE_BIN_TOOL_ARGS+=" -d ${NVD_DIR}"
-
-  # 添加供应商和产品信息
-  for lVENDOR in "${lVENDOR_ARR[@]}"; do
-    lCVE_BIN_TOOL_ARGS+=" --vendor ${lVENDOR}"
-  done
-
-  for lPRODUCT in "${lPRODUCT_ARR[@]}"; do
-    lCVE_BIN_TOOL_ARGS+=" --product ${lPRODUCT}"
-  done
-
-  # 执行cve-bin-tool
-  print_output "[*] Running cve-bin-tool with args: ${lCVE_BIN_TOOL_ARGS}" "no_log"
-  cve-bin-tool ${lCVE_BIN_TOOL_ARGS} > /dev/null 2>&1 || true
-}
-
-# ==========================================================================================
 # vuln_checker_threader - CVE漏洞检查线程函数(正常模式)
 #
 # 功能:
@@ -969,21 +926,31 @@ vuln_checker_threader() {
 #   在源码不可用的情况下,基于符号名匹配进行CVE过滤
 #   从NVD提取CVE相关的函数名,与固件符号表进行匹配
 #
+# 核心原则 (降级模式):
+#   只记录通过函数名匹配找到的验证结果。
+#   未能通过函数名匹配的CVE不写入任何验证文件,最终报告中也不记录此类CVE。
+#
 # 验证流程:
 #   1. 从CVE条目提取CVE编号
 #   2. 从NVD数据库获取CVE详细描述
-#   3. 尝试从描述中提取受影响的函数名
-#   4. 检查函数名是否在固件符号表中
-#   5. 记录匹配结果
+#   3. 尝试从描述中提取受影响的函数名(模式1: func_name(; 模式2: 全大写标识符)
+#   4. 逐一检查提取的函数名是否在固件符号表中
+#   5. 仅在匹配成功时写入 ${lCVE}_symbol_verified.txt 并计数
+#   6. 未匹配的CVE仅记录日志,不写入任何验证文件
 #
 # 参数:
 #   $1 - lVULN: CVE漏洞条目(CSV格式)
+#
+# 输出:
+#   匹配成功 → ${LOG_PATH_MODULE}/${lCVE}_symbol_verified.txt (带 "degraded" 标记)
+#   未匹配   → 仅写详细日志,不产生验证文件
 # ==========================================================================================
 vuln_checker_threader_degraded() {
   local lVULN="${1:-}"
   local lCVE=""
   local lCVSS3=""
   local lSUMMARY=""
+  # lVULN_FOUND=0 表示尚未通过函数名匹配找到验证结果
   local lVULN_FOUND=0
 
   # 从CSV第4字段提取CVE编号
@@ -1004,42 +971,58 @@ vuln_checker_threader_degraded() {
   # 从NVD JSON文件中提取英文描述
   lSUMMARY=$(jq -r '.descriptions[]? | select(.lang=="en") | .value' "${NVD_DIR}/${lCVE%-*}/${lCVE:0:11}"*"xx/${lCVE}.json" 2>/dev/null || true)
 
-  # 尝试从CVE描述中提取函数名
-  # 常见的函数名模式: function_name(), function_name( 等
+  # ------------------------------------------------------------------
+  # 步骤1: 从CVE描述中提取函数名
+  #   模式1: 形如 func_name( 或 func_name () 的调用式写法
+  # ------------------------------------------------------------------
   local lAFFECTED_FUNCS=()
   mapfile -t lAFFECTED_FUNCS < <(echo "${lSUMMARY}" | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\s*\(' | sed 's/\s*($//' | sort -u || true)
 
-  # 如果没有提取到函数名,尝试其他模式
+  # ------------------------------------------------------------------
+  # 步骤2: 如果模式1未提取到结果,尝试全大写标识符模式
+  #   模式2: 形如 SOME_FUNC 的全大写宏/常量/函数名
+  # ------------------------------------------------------------------
   if [[ "${#lAFFECTED_FUNCS[@]}" -eq 0 ]]; then
-    # 尝试从描述中提取可能的符号名(大写字母开头的标识符)
     mapfile -t lAFFECTED_FUNCS < <(echo "${lSUMMARY}" | grep -oE '\b[A-Z_][A-Z0-9_]*\b' | sort -u || true)
   fi
 
-  # 检查提取的函数名是否在固件符号表中
+  # ------------------------------------------------------------------
+  # 步骤3: 逐一检查提取的函数名是否在固件符号表中
+  #   只有在符号表中找到精确匹配时,才写入验证文件并设 lVULN_FOUND=1
+  #   一旦找到第一个匹配即停止,避免重复记录
+  # ------------------------------------------------------------------
   if [[ "${#lAFFECTED_FUNCS[@]}" -gt 0 ]]; then
     for lFUNC in "${lAFFECTED_FUNCS[@]}"; do
-      # 跳过常见的非函数标识符
+      # 跳过常见的噪音标识符: CVE编号前缀、LINUX、KERNEL等通用词
       if [[ "${lFUNC}" == "CVE"* ]] || [[ "${lFUNC}" == "LINUX"* ]] || [[ "${lFUNC}" == "KERNEL"* ]]; then
         continue
       fi
 
-      # 检查函数名是否在符号表中
+      # 在符号表中精确匹配函数名(整行匹配,避免误报)
       if grep -q "^${lFUNC}$" "${LOG_PATH_MODULE}/symbols_uniq.txt"; then
         lOUTx="[+] ${ORANGE}${lCVE}${GREEN} (${ORANGE}${lCVSS3}${GREEN}) - function ${ORANGE}${lFUNC}${GREEN} found in kernel symbols (degraded mode)${NC}"
         print_output "${lOUTx}"
         write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
+        # 写入验证文件: 带 "degraded" 标记,供 final_log_kernel_vulns 区分降级模式结果
         echo "${lCVE} (${lCVSS3}) - ${lK_VERSION} - symbol verified (degraded) - ${lFUNC}" >> "${LOG_PATH_MODULE}/${lCVE}_symbol_verified.txt"
         lVULN_FOUND=1
+        # 找到第一个匹配即停止,降级模式只需证明"存在"即可
         break
       fi
     done
   fi
 
-  # 如果通过函数名匹配找到,记录验证结果
+  # ------------------------------------------------------------------
+  # 步骤4: 根据匹配结果记录计数
+  #   只有 lVULN_FOUND=1 (通过函数名匹配)时才计入已验证计数
+  #   未匹配的CVE不写入任何验证文件,最终报告将跳过它们
+  # ------------------------------------------------------------------
   if [[ "${lVULN_FOUND}" -eq 1 ]]; then
+    # 通过函数名匹配验证成功 → 写入已验证计数
     write_log "lCNT_SYMBOL_VERIFIED_DEGRADED" "${TMP_DIR}/s25_counting.tmp"
   else
-    lOUTx="[-] ${ORANGE}${lCVE}${NC} - no matching symbols found in kernel (degraded mode)"
+    # 未找到匹配函数名 → 只写日志,不产生验证文件,报告中不记录此CVE
+    lOUTx="[-] ${ORANGE}${lCVE}${NC} - no matching function name found in kernel symbols (degraded mode)"
     print_output "${lOUTx}" "no_log"
     write_log "${lOUTx}" "${LOG_PATH_MODULE}/kernel_verification_${lK_VERSION}_detailed.log"
     write_log "lCNT_NO_SYMBOL_MATCH" "${TMP_DIR}/s25_counting.tmp"
@@ -1052,6 +1035,17 @@ vuln_checker_threader_degraded() {
 # 功能:
 #   汇总所有验证结果,生成最终的CSV报告
 #   统计已验证和未验证的CVE数量
+#
+# 两种运行模式的输出差异:
+#   正常模式 (KERNEL_SOURCE_AVAILABLE=1):
+#     - 统计 symbol_verified + compile_verified 两类验证结果
+#     - 未验证的CVE也计入 lNOT_VERIFIED 统计
+#     - CSV包含所有有验证记录的CVE(含双重验证)
+#
+#   降级模式 (KERNEL_SOURCE_AVAILABLE=0):
+#     - 只统计通过函数名匹配的验证结果(symbol_verified.txt 含 "degraded" 标记)
+#     - 未通过函数名匹配的CVE不写入CSV报告,体现"只记录找到的"原则
+#     - 统计输出明确标注为"降级模式(函数名匹配)"
 #
 # 参数:
 #   $1 - lK_VERSION: 内核版本
@@ -1070,48 +1064,108 @@ final_log_kernel_vulns() {
 
   print_output "[*] Generating final vulnerability report for kernel ${ORANGE}${lK_VERSION}${NC}"
 
-  # 创建CSV报告文件
+  # 创建CSV报告文件(表头)
   echo "kernel_version;cve;cvss;verified_symbol;verified_compile;status" > "${LOG_PATH_MODULE}/cve_results_kernel_${lK_VERSION}.csv"
 
-  for lVULN in "${lALL_KVULNS_ARR[@]}"; do
-    lCVE=$(echo "${lVULN}" | cut -d, -f4)
-    local lCVSS=$(echo "${lVULN}" | cut -d, -f6)
-    local lSYMBOL_VERIFIED=0
-    local lCOMPILE_VERIFIED=0
+  if [[ "${KERNEL_SOURCE_AVAILABLE:-0}" -eq 0 ]]; then
+    # ================================================================
+    # 降级模式: 只记录通过函数名匹配找到的验证结果
+    #   - 检查 ${lCVE}_symbol_verified.txt 是否存在且含 "degraded" 标记
+    #   - 匹配成功 → 写入CSV,标记 verified_symbol=1
+    #   - 未匹配   → 跳过,不写入CSV(体现"只记录找到的"原则)
+    # ================================================================
+    for lVULN in "${lALL_KVULNS_ARR[@]}"; do
+      lCVE=$(echo "${lVULN}" | cut -d, -f4)
+      local lCVSS="${lVULN}"
+      lCVSS=$(echo "${lVULN}" | cut -d, -f6)
+      local lSYMBOL_VERIFIED=0
 
-    # 检查是否有符号验证
-    if [[ -f "${LOG_PATH_MODULE}/${lCVE}_symbol_verified.txt" ]]; then
-      lSYMBOL_VERIFIED=1
-      ((lVERIFIED_SYMBOL++))
+      # 只有在验证文件存在且含 "degraded" 标记时才记录
+      # 这确保只有通过函数名匹配的CVE才进入最终报告
+      if [[ -f "${LOG_PATH_MODULE}/${lCVE}_symbol_verified.txt" ]] && \
+         grep -q "degraded" "${LOG_PATH_MODULE}/${lCVE}_symbol_verified.txt" 2>/dev/null; then
+        lSYMBOL_VERIFIED=1
+        ((lVERIFIED_SYMBOL+=1))
+        # 写入CSV: compile_verified固定为0(降级模式无编译验证能力)
+        echo "${lK_VERSION};${lCVE};${lCVSS};${lSYMBOL_VERIFIED};0;verified_degraded" >> "${LOG_PATH_MODULE}/cve_results_kernel_${lK_VERSION}.csv"
+      fi
+      # 未通过函数名匹配的CVE: 不写CSV,不计入任何验证统计
+      # (lNOT_VERIFIED 在降级模式下不计,避免误导用户)
+    done
+
+    # 输出降级模式统计信息(明确标注"降级模式")
+    print_output "[+] Verification statistics for kernel ${ORANGE}${lK_VERSION}${NC} (degraded mode - function name matching):"
+    print_output "    - Function name matched (symbol verified): ${ORANGE}${lVERIFIED_SYMBOL}${NC}"
+    print_output "    - Total CVEs checked: ${ORANGE}${#lALL_KVULNS_ARR[@]}${NC}"
+    if [[ "${#lALL_KVULNS_ARR[@]}" -gt 0 ]]; then
+      local lMATCH_RATE=$(( lVERIFIED_SYMBOL * 100 / ${#lALL_KVULNS_ARR[@]} ))
+      print_output "    - Match rate: ${ORANGE}${lMATCH_RATE}%${NC}"
     fi
+    print_output "    - Note: Only CVEs with function name match are recorded in the report"
+  else
+    # ================================================================
+    # 正常模式: 统计 symbol_verified + compile_verified 两类验证
+    #   - 有 symbol_verified.txt → lSYMBOL_VERIFIED=1
+    #   - 有 compiled_verified.txt → lCOMPILE_VERIFIED=1
+    #   - 两者都有 → lVERIFIED_BOTH++
+    #   - 都没有   → lNOT_VERIFIED++
+    # 注意: 若同时有两种验证,只写一行CSV(合并写入)
+    # ================================================================
+    for lVULN in "${lALL_KVULNS_ARR[@]}"; do
+      lCVE=$(echo "${lVULN}" | cut -d, -f4)
+      local lCVSS="${lVULN}"
+      lCVSS=$(echo "${lVULN}" | cut -d, -f6)
+      local lSYMBOL_VERIFIED=0
+      local lCOMPILE_VERIFIED=0
 
-    # 检查是否有编译验证
-    if [[ -f "${LOG_PATH_MODULE}/${lCVE}_compiled_verified.txt" ]]; then
-      lCOMPILE_VERIFIED=1
-      ((lVERIFIED_COMPILE++))
-    fi
+      # 检查是否有符号验证
+      if [[ -f "${LOG_PATH_MODULE}/${lCVE}_symbol_verified.txt" ]]; then
+        lSYMBOL_VERIFIED=1
+        ((lVERIFIED_SYMBOL+=1))
+      fi
 
-    # 统计双重验证
-    if [[ "${lSYMBOL_VERIFIED}" -eq 1 ]] && [[ "${lCOMPILE_VERIFIED}" -eq 1 ]]; then
-      ((lVERIFIED_BOTH++))
-    fi
+      # 检查是否有编译验证
+      if [[ -f "${LOG_PATH_MODULE}/${lCVE}_compiled_verified.txt" ]]; then
+        lCOMPILE_VERIFIED=1
+        ((lVERIFIED_COMPILE+=1))
+      fi
 
-    # 统计未验证
-    if [[ "${lSYMBOL_VERIFIED}" -eq 0 ]] && [[ "${lCOMPILE_VERIFIED}" -eq 0 ]]; then
-      ((lNOT_VERIFIED++))
-    fi
+      # 统计双重验证(同时通过符号验证和编译验证)
+      if [[ "${lSYMBOL_VERIFIED}" -eq 1 ]] && [[ "${lCOMPILE_VERIFIED}" -eq 1 ]]; then
+        ((lVERIFIED_BOTH+=1))
+      fi
 
-    # 写入CSV
-    echo "${lK_VERSION};${lCVE};${lCVSS};${lSYMBOL_VERIFIED};${lCOMPILE_VERIFIED};verified" >> "${LOG_PATH_MODULE}/cve_results_kernel_${lK_VERSION}.csv"
-  done
+      # 统计未验证(两种验证均未通过)
+      if [[ "${lSYMBOL_VERIFIED}" -eq 0 ]] && [[ "${lCOMPILE_VERIFIED}" -eq 0 ]]; then
+        ((lNOT_VERIFIED+=1))
+      fi
 
-  # 输出统计信息
-  print_output "[+] Verification statistics for kernel ${ORANGE}${lK_VERSION}${NC}:"
-  print_output "    - Symbol verified: ${ORANGE}${lVERIFIED_SYMBOL}${NC}"
-  print_output "    - Compile verified: ${ORANGE}${lVERIFIED_COMPILE}${NC}"
-  print_output "    - Both verified: ${ORANGE}${lVERIFIED_BOTH}${NC}"
-  print_output "    - Not verified: ${ORANGE}${lNOT_VERIFIED}${NC}"
+      # 只要有任意一种验证通过,写入CSV(避免重复行: 合并两种验证状态写一行)
+      if [[ "${lSYMBOL_VERIFIED}" -eq 1 ]] || [[ "${lCOMPILE_VERIFIED}" -eq 1 ]]; then
+        echo "${lK_VERSION};${lCVE};${lCVSS};${lSYMBOL_VERIFIED};${lCOMPILE_VERIFIED};verified" >> "${LOG_PATH_MODULE}/cve_results_kernel_${lK_VERSION}.csv"
+      fi
+    done
+
+    # 输出正常模式统计信息
+    print_output "[+] Verification statistics for kernel ${ORANGE}${lK_VERSION}${NC}:"
+    print_output "    - Symbol verified: ${ORANGE}${lVERIFIED_SYMBOL}${NC}"
+    print_output "    - Compile verified: ${ORANGE}${lVERIFIED_COMPILE}${NC}"
+    print_output "    - Both verified: ${ORANGE}${lVERIFIED_BOTH}${NC}"
+    print_output "    - Not verified: ${ORANGE}${lNOT_VERIFIED}${NC}"
+  fi
 }
 
-# 调用主函数
-S26_kernel_vuln_verifier
+get_kernel_version_csv_data_s24() {
+  local lS24_CSV_LOG="${1:-}"
+
+  if ! [[ -f "${lS24_CSV_LOG}" ]];then
+    print_output "[-] No EMBA log found ..."
+    return
+  fi
+
+  export K_VERSIONS_ARR=()
+
+  # currently we only support one kernel version
+  # if we detect multiple kernel versions we only process the first one after sorting
+  mapfile -t K_VERSIONS_ARR < <(cut -d\; -f2 "${lS24_CSV_LOG}" | tail -n +2 | grep -v "NA" | sort -u)
+}

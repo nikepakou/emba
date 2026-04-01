@@ -238,6 +238,7 @@ F17_cve_bin_tool() {
     #   若组件名以 "linux_kernel" 开头且 S26 模块已生成验证结果，
     #   直接复用 S26（内核漏洞验证模块）的数据
     # -------------------------------------------------------------------
+    # 检查是否为 Linux 内核组件：产品名以 "linux_kernel" 开头，且 S26 模块已生成漏洞摘要文件
     elif [[ "${lPRODUCT_NAME}" == "linux_kernel"* ]] && [[ -s "${S26_LOG_DIR}/vuln_summary.txt" ]]; then
       print_output "[*] Possible Linux kernel results from s26 detected ... no CVE detection needed" "no_log"
       # 复制 S26 已生成的各类结果文件到本模块目录

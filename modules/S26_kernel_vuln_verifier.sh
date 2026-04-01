@@ -477,6 +477,14 @@ S26_kernel_vuln_verifier()
     # 从CVE结果CSV中提取已验证的CVE(第6或7字段为1表示已验证)
     local lVERIFIED_KERNEL_VERS_ARR=()
     local lVERIFIED_KVERS=""
+    # 从CVE结果CSV文件中提取已验证的内核版本列表
+    # 字段说明(分号分隔):
+    #   f1: 内核版本号
+    #   f3: CVE编号
+    #   f6: 符号验证结果(1=已验证,0=未验证)
+    #   f7: 编译验证结果(1=已验证,0=未验证)
+    # 筛选条件: 第6或第7字段为1(表示至少通过一种验证方式确认)
+    # 最终提取第1字段(内核版本号)并去重排序
     mapfile -t lVERIFIED_KERNEL_VERS_ARR < <(cut -d ';' -f1,3,6,7 "${LOG_PATH_MODULE}"/cve_results_kernel_*.csv | grep ";1;\|;1$" | cut -d ';' -f1 | sort -u || true)
 
     if [[ "${#lVERIFIED_KERNEL_VERS_ARR[@]}" -gt 0 ]]; then
@@ -514,18 +522,25 @@ S26_kernel_vuln_verifier()
       done
 
       # 合并新旧汇总文件
+      # 检查新的漏洞汇总文件是否存在
       if [[ -f "${LOG_PATH_MODULE}/vuln_summary_new.txt" ]]; then
-        local lVULN_SUMMARY_ENTRY=""
-        while read -r  lVULN_SUMMARY_ENTRY; do
-          local lkVERSION=""
+        local lVULN_SUMMARY_ENTRY=""    # 存储从旧文件中读取的每一行汇总条目
+        # 遍历旧汇总文件中的所有条目
+        while read -r lVULN_SUMMARY_ENTRY; do
+          local lkVERSION=""            # 存储提取的内核版本号
+          # 从汇总条目中提取内核版本号(第3个冒号分隔字段)
           lkVERSION=$(echo "${lVULN_SUMMARY_ENTRY}" | cut -d ':' -f3)
-          # remove all spaces
+          # 移除版本号中的所有空格
           lkVERSION=${lkVERSION//\ /}
+          # 检查该版本是否已存在于新汇总文件中
+          # 如果已存在则跳过,避免重复
           if grep -q "${lkVERSION}" "${LOG_PATH_MODULE}/vuln_summary_new.txt"; then
             continue
           fi
+          # 将未重复的条目追加到新汇总文件
           echo "${lVULN_SUMMARY_ENTRY}" >> "${LOG_PATH_MODULE}/vuln_summary_new.txt"
         done < "${LOG_PATH_MODULE}/vuln_summary.txt"
+        # 用新汇总文件替换旧汇总文件,完成合并更新
         mv "${LOG_PATH_MODULE}/vuln_summary_new.txt" "${LOG_PATH_MODULE}/vuln_summary.txt" || true
       fi
     fi
@@ -1033,7 +1048,7 @@ vuln_checker_threader_degraded() {
 # final_log_kernel_vulns - 生成最终内核漏洞报告
 #
 # 功能:
-#   汇总所有验证结果,生成最终的CSV报告
+#   汇总所有验证结果,生成最终的CSV报告（cve_results_kernel_${lK_VERSION}.csv）
 #   统计已验证和未验证的CVE数量
 #
 # 两种运行模式的输出差异:

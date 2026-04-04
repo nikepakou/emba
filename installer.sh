@@ -101,6 +101,19 @@ if [[ "$#" -lt 1 ]] || [[ "$#" -gt 2 ]]; then
   exit 1
 fi
 
+
+
+# 参数列表:
+#   -d : 默认/Docker模式安装EMBA所有依赖 (DOCKER_SETUP=1, CVE_SEARCH=0)
+#   -D : Docker镜像内安装EMBA (IN_DOCKER=1, DOCKER_SETUP=0, CVE_SEARCH=0)
+#   -f : 强制安装，绕过多个检查 (FORCE=1)
+#   -F : 开发者模式安装，已弃用 (FULL=1, DOCKER_SETUP=0, CVE_SEARCH=1)
+#   -g : GitHub Actions测试安装 (DOCKER_SETUP=1, GH_ACTION=1, CVE_SEARCH=0)
+#   -h : 显示帮助信息
+#   -l : 列出所有依赖，已弃用 (LIST_DEP=1, CVE_SEARCH=0, DOCKER_SETUP=0)
+#   -r : 从系统中移除EMBA (REMOVE=1)
+#   -s : 使用HTTPS仓库进行安装 (SSL_REPOS=1)
+#   -c <container> : 指定容器名称 (CONTAINER="${OPTARG}"),如果没有通过 -c 参数指定，会尝试从 docker-compose.yml 文件中读取，或使用默认值 embeddedanalyzer/emba
 while getopts CdDfFghlrsc: OPT ; do
   case ${OPT} in
     d)

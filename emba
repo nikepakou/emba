@@ -346,6 +346,7 @@ main() {
   set -a
   trap cleaner INT
 
+  # Set INVOCATION_PATH to the directory of the script，返回当前脚本所在目录的绝对路径
   INVOCATION_PATH="$(dirname "${0}")"
 
   export EMBA_PID="$$"
@@ -777,8 +778,31 @@ main() {
       fi
 
       # EMBA startup:
+      # 
       if [[ "${SILENT}" -eq 0 ]]; then
         # EMBA container starts in the foreground and we can see all the logs
+        # 在静默模式禁用时，启动EMBA主容器并在前台运行，以便查看所有日志
+        
+        # COMPOSE_IGNORE_ORPHANS=True 表示忽略容器退出后未删除的情况，避免容器数量超过限制导致的错误
+        # COMPOSE_IGNORE_ORPHANS 是 docker-compose 命令的一个参数，用于忽略容器退出后未删除的情况，避免容器数量超过限制导致的错误
+        # 这个参数在 docker-compose 命令中是可选的，默认值是 False，即不忽略容器退出后未删除的情况
+
+        # EMBA="${INVOCATION_PATH}" 表示 EMBA 命令的绝对路径，用于在容器中执行 EMBA 命令
+
+        # DOCKER_COMPOSE[@] 是 docker-compose 命令的数组，包含所有参数，包括环境变量、卷挂载、容器名称等
+
+        # --rm 表示容器退出后自动删除, -c 表示容器启动时执行的命令
+        # _ "${ARGUMENTS[@]}" 表示将所有参数传递给 EMBA 命令，包括命令行参数和环境变量
+        # $@ 表示将所有参数传递给 EMBA 命令
+
+        #  EMBA和FIRMWARE参数是如何传递给容器中的 EMBA 命令的？emba -l /logs -f /firmware -i "$@" 中已经包含了FIRMWARE_PATH，是否存在冲突
+        #  答：在启动容器时，通过环境变量 EMBA 和 FIRMWARE 传递给容器中的 EMBA 命令，不会与命令行参数冲突，
+        #  因为环境变量的优先级高于命令行参数，所以容器中的 EMBA 命令会使用环境变量中的值
+        #  为什么环境变量的优先级高于命令行参数？
+        #  答：环境变量的优先级高于命令行参数，因为环境变量可以在容器启动时动态设置，而命令行参数只能在容器启动时传递
+
+        # 给出下面这条命令的执行实例：COMPOSE_IGNORE_ORPHANS=True EMBA="/emba/emba" FIRMWARE="/emba/firmware" LOG="/tmp" "${DOCKER_COMPOSE[@]}" run --rm emba/emba -l /logs -f /firmware -i "$@"' _ "${ARGUMENTS[@]}"
+        D_RETURN=$?
         COMPOSE_IGNORE_ORPHANS=True EMBA="${INVOCATION_PATH}" FIRMWARE="${FIRMWARE_PATH}" LOG="${LOG_DIR}" "${DOCKER_COMPOSE[@]}" run --rm emba -c './emba -l /logs -f /firmware -i "$@"' _ "${ARGUMENTS[@]}"
         D_RETURN=$?
       else

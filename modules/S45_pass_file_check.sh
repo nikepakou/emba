@@ -28,6 +28,8 @@ S45_pass_file_check() {
   local lLINE=""
   local lPASSWD_STUFF_ARR=()
 
+  # 使用 config_find 工具从配置文件 pass_files.cfg 中查找密码相关文件路径
+  # 将查找结果读取到数组 lPASSWD_STUFF_ARR 中，每个元素对应一个文件路径
   mapfile -t lPASSWD_STUFF_ARR < <(config_find "${CONFIG_DIR}""/pass_files.cfg")
 
   if [[ "${lPASSWD_STUFF_ARR[0]-}" == "C_N_F" ]]; then
@@ -35,7 +37,10 @@ S45_pass_file_check() {
   elif [[ "${#lPASSWD_STUFF_ARR[@]}" -ne 0 ]]; then
     # pull out vital sudoers info
     # This test is based on the source code from LinEnum: https://github.com/rebootuser/LinEnum/blob/master/LinEnum.sh
-    local lSUDOERS=""
+    local lSUDOERS="" # 用于存储 sudoers 文件内容
+    mapfile -t lSUDOERS_FILE_PATH_ARR < <(mod_path "/ETC_PATHS/sudoers")
+
+    # 遍历 sudoers 文件路径数组，提取有效内容
     mapfile -t lSUDOERS_FILE_PATH_ARR < <(mod_path "/ETC_PATHS/sudoers")
 
     for lSUDOERS_FILE in "${lSUDOERS_FILE_PATH_ARR[@]}"; do
